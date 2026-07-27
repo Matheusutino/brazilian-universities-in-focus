@@ -48,7 +48,7 @@ class LLMArticleExtractor:
 
         for block in blocks:
             if block.get("error"):
-                failures.append(str(block.get("content") or "erro desconhecido"))
+                failures.append(str(block.get("content") or "unknown error"))
                 continue
             candidate = self._unwrap_block(block)
             try:
@@ -58,8 +58,8 @@ class LLMArticleExtractor:
                 continue
             return self._normalize_article(article, url)
 
-        detail = "; ".join(failures) or "resposta vazia"
-        raise ValueError(f"OpenRouter nao retornou um artigo valido: {detail}")
+        detail = "; ".join(failures) or "empty response"
+        raise ValueError(f"OpenRouter did not return a valid article: {detail}")
 
     def _strategy(self) -> ExtractionStrategy:
         if self._strategy_instance is not None:
@@ -67,7 +67,7 @@ class LLMArticleExtractor:
 
         api_key = self.api_key or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
-            raise ValueError("OPENROUTER_API_KEY nao foi definida no .env")
+            raise ValueError("OPENROUTER_API_KEY is not set in .env")
         model = self.model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
         provider = model if model.startswith("openrouter/") else f"openrouter/{model}"
 
@@ -84,12 +84,12 @@ class LLMArticleExtractor:
             schema=ArticleLLMResponse.model_json_schema(),
             extraction_type="schema",
             instruction=(
-                "Extraia somente o conteudo editorial principal desta noticia. "
-                "Ignore menus, cabecalhos, rodapes, publicidade, noticias relacionadas "
-                "e barras de compartilhamento. Preserve o texto integral, sem resumir, "
-                "traduzir ou inventar informacoes. Retorne autor e data somente quando "
-                "estiverem presentes e mantenha o subtitulo separado do titulo. Em "
-                "links e images, use apenas URLs existentes no HTML do corpo editorial."
+                "Extract only the main editorial content from this news article. "
+                "Ignore menus, headers, footers, ads, related stories, and sharing "
+                "widgets. Preserve the complete original text without summarizing, "
+                "translating, or inventing information. Return the author and date only "
+                "when present, and keep the subtitle separate from the title. For links "
+                "and images, only use URLs found in the editorial body HTML."
             ),
             input_format="html",
             apply_chunking=False,

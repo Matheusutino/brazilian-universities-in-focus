@@ -3,8 +3,8 @@ import hashlib
 
 import httpx
 
-from jornais_new.config import USP
-from jornais_new.fetching import ContentFetcher
+from university_news.sources.catalog import USP
+from university_news.pipeline.fetching import ContentFetcher
 
 
 def test_filename_is_sha256() -> None:

@@ -28,6 +28,36 @@ def atomic_write_json(path: Path, value: Any) -> None:
     atomic_write_bytes(path, content)
 
 
+def atomic_write_json_array(
+    path: Path,
+    records: Iterable[Mapping[str, Any]],
+) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    count = 0
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as temporary_file:
+            temporary_file.write("[\n")
+            for record in records:
+                if count:
+                    temporary_file.write(",\n")
+                temporary_file.write(
+                    json.dumps(record, ensure_ascii=False, indent=2)
+                )
+                count += 1
+            temporary_file.write("\n]\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return count
+
+
 def atomic_write_jsonl(path: Path, records: Iterable[Mapping[str, Any]]) -> None:
     content = b"".join(
         json.dumps(record, ensure_ascii=False).encode("utf-8") + b"\n"
@@ -55,8 +85,8 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             try:
                 value = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"JSON invalido em {path}:{line_number}") from exc
+                raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
             if not isinstance(value, dict):
-                raise ValueError(f"Registro nao e um objeto em {path}:{line_number}")
+                raise ValueError(f"Record is not an object at {path}:{line_number}")
             records.append(value)
     return records

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 "
-    "JornaisNew/0.1"
+    "UniversityNews/0.1"
 )
 
 
@@ -29,7 +29,7 @@ class SiteConfig:
 
     def page_url(self, page: int) -> str:
         if page < self.start_page:
-            raise ValueError(f"A posicao deve ser maior ou igual a {self.start_page}")
+            raise ValueError(f"Position must be at least {self.start_page}")
         if page == self.start_page:
             return self.listing_url
         return self.paginated_url.format(page=page)
@@ -37,13 +37,13 @@ class SiteConfig:
     def page_values(self, start: int, end: int) -> range:
         if start < self.start_page or end > self.end_page or end < start:
             raise ValueError(
-                f"Faixa invalida para {self.name}: {self.start_page}..{self.end_page}"
+                f"Invalid range for {self.name}: {self.start_page}..{self.end_page}"
             )
         if (start - self.start_page) % self.page_step != 0 or (
             end - self.start_page
         ) % self.page_step != 0:
             raise ValueError(
-                f"Inicio e fim devem respeitar incrementos de {self.page_step}"
+                f"Start and end must use increments of {self.page_step}"
             )
         return range(start, end + 1, self.page_step)
 
@@ -72,6 +72,7 @@ UFAL = SiteConfig(
     rss_url=None,
     content_selector="article#content",
     title_selector="article#content h1",
+    subtitle_selector="article#content p.lead",
     author_selector="article#content strong.autor",
     date_selector="article#content time.data",
     tags_selector="article#content .keywords-viewlet a",
@@ -159,6 +160,7 @@ UFRGS = SiteConfig(
         ".box-text-blog > div:not(.breadcrumbs)"
     ),
     title_selector=".box-text-blog > h1",
+    subtitle_selector=".box-text-blog > h1 + p",
     date_selector=".box-text-blog > small.date",
 )
 
@@ -413,6 +415,27 @@ UFC = SiteConfig(
     tags_selector=".article .header > a",
 )
 
+UFT = SiteConfig(
+    name="uft",
+    base_url="https://www.uft.edu.br/",
+    listing_url="https://www.uft.edu.br/noticias",
+    paginated_url="https://www.uft.edu.br/noticias?page={page}",
+    listing_selector="#page-document .listing-item-main-link[href]",
+    start_page=1,
+    end_page=43,
+    page_step=1,
+    rss_url=None,
+    content_selector=(
+        "#page-document > div:first-of-type > div:first-of-type, "
+        "#page-document > p, #page-document > h3, .tags-container"
+    ),
+    title_selector="#page-document h1.documentFirstHeading",
+    subtitle_selector="#page-document .title-description",
+    author_selector="#page-document .title-metadados .title-txt > span:first-of-type",
+    date_selector="#page-document .title-metadados .title-txt > span:nth-of-type(2)",
+    tags_selector=".tags-container a.tags-metadados",
+)
+
 SITES: dict[str, SiteConfig] = {
     site.name: site
     for site in (
@@ -434,5 +457,35 @@ SITES: dict[str, SiteConfig] = {
         UEM,
         FURG,
         UFC,
+        UFT,
     )
 }
+
+# Geographic region of each monitored university's main campus.
+SITE_REGIONS = {
+    "ufpa": "Norte",
+    "ufal": "Nordeste",
+    "unb": "Centro-Oeste",
+    "ufms": "Centro-Oeste",
+    "usp": "Sudeste",
+    "unesp": "Sudeste",
+    "ufrgs": "Sul",
+    "ufpr": "Sul",
+    "ufrj": "Sudeste",
+    "uerj": "Sudeste",
+    "ufabc": "Sudeste",
+    "ufmg": "Sudeste",
+    "ufla": "Sudeste",
+    "unicamp": "Sudeste",
+    "unifesp": "Sudeste",
+    "uem": "Sul",
+    "furg": "Sul",
+    "ufc": "Nordeste",
+    "uft": "Norte",
+}
+REGIONS = ("Norte", "Nordeste", "Centro-Oeste", "Sudeste", "Sul")
+
+
+def region_for_site(site: str) -> str:
+    """Return the Brazilian region for a university site."""
+    return SITE_REGIONS.get(site.lower(), "Não mapeada")

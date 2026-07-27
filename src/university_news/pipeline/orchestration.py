@@ -3,11 +3,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from .config import SiteConfig
+from ..shared.io import (
+    append_jsonl,
+    atomic_write_json,
+    atomic_write_jsonl,
+    read_jsonl,
+)
+from ..sources.catalog import SiteConfig
 from .discovery import UrlDiscovery
 from .extraction import ExtractionMode, StructuredExtractor
 from .fetching import ContentFetcher
-from .io_utils import append_jsonl, atomic_write_json, atomic_write_jsonl, read_jsonl
 
 PipelineStage = Literal["discovery", "fetching", "extraction", "all"]
 
@@ -45,6 +50,7 @@ class NewsPipeline:
         self.manifest_path = output_directory / "manifest.jsonl"
         self.articles_path = output_directory / "articles.jsonl"
         self.errors_path = output_directory / "errors.jsonl"
+        self.current_errors_path = output_directory / ".errors.jsonl.current"
 
     async def run(
         self,
@@ -56,9 +62,9 @@ class NewsPipeline:
         force: bool = False,
     ) -> PipelineStats:
         if stage not in {"discovery", "fetching", "extraction", "all"}:
-            raise ValueError(f"Estagio invalido: {stage}")
+            raise ValueError(f"Invalid stage: {stage}")
         if extractor not in {"trafilatura", "llm", "hybrid"}:
-            raise ValueError(f"Extrator invalido: {extractor}")
+            raise ValueError(f"Invalid extractor: {extractor}")
         start_page = self.site.start_page if start_page is None else start_page
         end_page = self.site.end_page if end_page is None else end_page
         if stage in {"discovery", "all"}:
@@ -78,6 +84,7 @@ class NewsPipeline:
             await self._run_fetching(urls, force, stats)
         if stage in {"extraction", "all"}:
             self._run_extraction(urls, force, stats, extractor)
+        self._finalize_errors()
         return stats
 
     async def _run_discovery(
@@ -96,8 +103,8 @@ class NewsPipeline:
         urls = sorted(discovery_result.urls)
         atomic_write_jsonl(self.urls_path, ({"url": url} for url in urls))
         if discovery_result.errors:
-            # Uma proxima execucao deve tentar novamente as paginas que falharam,
-            # em vez de considerar uma lista parcial como cache completo.
+            # A later run must retry failed pages instead of treating a partial
+            # URL list as a complete cache.
             self.discovery_state_path.unlink(missing_ok=True)
         else:
             atomic_write_json(
@@ -147,7 +154,7 @@ class NewsPipeline:
         stats.extraction_errors = len(extraction_result.errors)
 
     def _prepare_run(self, stage: PipelineStage, force: bool) -> None:
-        self.errors_path.unlink(missing_ok=True)
+        self.current_errors_path.unlink(missing_ok=True)
         if not force:
             return
 
@@ -168,7 +175,7 @@ class NewsPipeline:
     def _load_urls(self) -> list[str]:
         if not self.urls_path.is_file():
             raise FileNotFoundError(
-                f"URLs nao encontradas em {self.urls_path}; execute o estagio discovery"
+                f"No URLs found at {self.urls_path}; run the discovery stage"
             )
         urls = {
             str(record["url"])
@@ -183,7 +190,7 @@ class NewsPipeline:
         try:
             state = json.loads(self.discovery_state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            raise ValueError("Estado de descoberta invalido") from exc
+            raise ValueError("Invalid discovery state") from exc
         expected = {
             "site": self.site.name,
             "start_page": start_page,
@@ -194,7 +201,13 @@ class NewsPipeline:
         return self._load_urls()
 
     def _record_errors(self, records: list[dict[str, object]]) -> None:
-        append_jsonl(self.errors_path, records)
+        append_jsonl(self.current_errors_path, records)
+
+    def _finalize_errors(self) -> None:
+        if self.current_errors_path.exists():
+            self.current_errors_path.replace(self.errors_path)
+            return
+        atomic_write_jsonl(self.errors_path, ())
 
     @staticmethod
     def stats_as_dict(stats: PipelineStats) -> dict[str, int]:

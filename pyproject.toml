@@ -1,7 +1,7 @@
 [project]
-name = "jornais-new"
+name = "university-news"
 version = "0.1.0"
-description = "Pipeline de scraping de noticias do Jornal da USP"
+description = "Collect, process, and search news from Brazilian universities"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,16 +10,26 @@ dependencies = [
     "duckdb>=1.4.0",
     "feedparser>=6.0.11",
     "httpx>=0.27.0",
+    "lancedb>=0.25.0",
+    "lingua-language-detector>=2.2.0",
+    "llama-cpp-python>=0.3.20",
     "lxml>=5.2.2",
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.1",
+    "rank-bm25>=0.2.2",
     "streamlit>=1.50.0",
     "tenacity>=8.3.0",
+    "tqdm>=4.67.0",
     "trafilatura>=1.12.0",
 ]
 
 [project.scripts]
-jornais-new = "jornais_new.cli:main"
+university-news = "university_news.cli:main"
+university-news-all = "university_news.pipeline.runner:main"
+university-news-preprocess = "university_news.pipeline.preprocessing:main"
+university-news-compile = "university_news.pipeline.preprocessing:compile_main"
+university-news-index = "university_news.search.vector_index:main"
+university-news-analyze = "university_news.analysis.quality:main"
 
 [dependency-groups]
 dev = [
@@ -31,6 +41,13 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/university_news"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.uv]
+no-binary-package = ["llama-cpp-python"]
+extra-build-variables = { llama-cpp-python = { CMAKE_ARGS = "-DGGML_CUDA=ON" } }

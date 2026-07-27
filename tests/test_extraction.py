@@ -1,10 +1,10 @@
 import json
 
-from jornais_new.config import UFAL, UFMS, UFPA, UFRGS, UNB, UNESP
-from jornais_new.extraction import StructuredExtractor
-from jornais_new.fetching import ContentFetcher
-from jornais_new.io_utils import read_jsonl
-from jornais_new.llm_extraction import LLMArticleExtractor
+from university_news.sources.catalog import UFAL, UFMS, UFPA, UFRGS, UFT, UNB, UNESP
+from university_news.pipeline.extraction import StructuredExtractor
+from university_news.pipeline.fetching import ContentFetcher
+from university_news.shared.io import read_jsonl
+from university_news.pipeline.llm_extraction import LLMArticleExtractor
 
 
 def test_extraction_normalizes_fields_and_resumes(tmp_path, monkeypatch) -> None:
@@ -32,7 +32,7 @@ def test_extraction_normalizes_fields_and_resumes(tmp_path, monkeypatch) -> None
           <graphic src="/wp-content/uploads/imagem.jpg" />
         </main></doc>"""
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_extract)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_extract)
     articles_path = tmp_path / "articles.jsonl"
     extractor = StructuredExtractor(raw_directory, articles_path)
 
@@ -67,7 +67,7 @@ def test_extraction_records_empty_text_and_missing_html(tmp_path, monkeypatch) -
         "<html></html>", encoding="utf-8"
     )
     monkeypatch.setattr(
-        "jornais_new.extraction.extract",
+        "university_news.pipeline.extraction.extract",
         lambda *args, **kwargs: json.dumps({"title": "Sem texto", "text": ""}),
     )
 
@@ -125,7 +125,7 @@ def test_hybrid_uses_llm_when_trafilatura_has_no_author(tmp_path, monkeypatch) -
                 }
             ]
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -146,6 +146,7 @@ def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
         """<article id="content">
           <header><h1>Matéria da Ufal</h1><strong class="autor">Por Maria Silva – jornalista</strong>
           <time class="data" datetime="2026-06-26 12:37:17-03:00"></time></header>
+          <p class="lead">Subtítulo da matéria da Ufal</p>
           <div id="content-core"><p>Corpo editorial</p></div>
           <div class="keywords-viewlet"><a>Pesquisa</a><a>Ufal</a></div>
         </article>""",
@@ -164,7 +165,7 @@ def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
             )
         return "<doc><main><p>Corpo editorial</p></main></doc>"
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -174,9 +175,50 @@ def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
 
     article = extractor.extract_file(raw_path, url)
 
+    assert article["subtitle"] == "Subtítulo da matéria da Ufal"
     assert article["author"] == "Maria Silva – jornalista"
     assert article["date"] == "2026-06-26"
     assert article["tags"] == ["Pesquisa", "Ufal"]
+
+
+def test_uft_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:
+    url = "https://www.uft.edu.br/noticias/materia"
+    raw_path = tmp_path / "article.html"
+    raw_path.write_text(
+        """<div id="page-document" class="ui container">
+          <div><div>
+            <h1 class="documentFirstHeading">Título UFT</h1>
+            <div class="title-description">Resumo UFT</div>
+            <div class="title-metadados"><div class="title-txt">
+              Por <span>Maria Silva</span>
+              <span>| Publicado em 02/07/2026 - 23:40</span>
+            </div></div>
+          </div></div>
+          <p>Texto editorial da notícia da UFT.</p>
+          <div class="tags-container"><a class="tags-metadados">Pesquisa</a>
+            <a class="tags-metadados">UFT</a></div>
+        </div>""",
+        encoding="utf-8",
+    )
+
+    def fake_trafilatura(*args, **kwargs):
+        if kwargs["output_format"] == "json":
+            return json.dumps({"title": "Título UFT", "text": "x" * 300})
+        return "<doc><main><p>Texto editorial da notícia da UFT.</p></main></doc>"
+
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
+    article = StructuredExtractor(
+        tmp_path,
+        tmp_path / "articles.jsonl",
+        mode="trafilatura",
+        site=UFT,
+    ).extract_file(raw_path, url)
+
+    assert article["title"] == "Título UFT"
+    assert article["subtitle"] == "Resumo UFT"
+    assert article["author"] == "Maria Silva"
+    assert article["date"] == "2026-07-02"
+    assert article["tags"] == ["Pesquisa", "UFT"]
 
 
 def test_unesp_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:
@@ -208,7 +250,7 @@ def test_unesp_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
             )
         return "<doc><main><p>Corpo editorial</p></main></doc>"
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -254,7 +296,7 @@ def test_unb_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> Non
             )
         return "<doc><main><p>Corpo editorial</p></main></doc>"
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -275,7 +317,7 @@ def test_ufms_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
     url = "https://www.ufms.br/materia/"
     raw_path = tmp_path / "article.html"
     raw_path.write_text(
-        """<div class="post-inner-content">
+        """<html><body><div class="post-inner-content">
           <header class="entry-header page-header">
             <h1 class="entry-title">Título UFMS</h1>
             <div class="entry-meta">
@@ -289,7 +331,7 @@ def test_ufms_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
             </div>
           </header>
           <div class="entry-content"><p>Corpo editorial</p></div>
-        </div>""",
+        </div></body></html>""",
         encoding="utf-8",
     )
 
@@ -305,7 +347,7 @@ def test_ufms_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
             )
         return "<doc><main><p>Corpo editorial</p></main></doc>"
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -316,6 +358,7 @@ def test_ufms_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
     article = extractor.extract_file(raw_path, url)
 
     assert article["title"] == "Título UFMS"
+    assert article["subtitle"] is None
     assert article["date"] == "2026-07-06"
     assert article["tags"] == ["Destaque", "Notícias"]
 
@@ -327,6 +370,7 @@ def test_ufrgs_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
         """<div class="box-text-blog">
           <div class="breadcrumbs">Página Inicial / Todas as notícias / Matéria</div>
           <h1>Título UFRGS</h1>
+          <p>Subtítulo da matéria da UFRGS</p>
           <small class="date">19 de abril de 2021 às 14:49</small>
           <img class="full-img-article" src="/site/wp-content/uploads/imagem.jpg">
           <div><p>Corpo editorial</p></div>
@@ -341,13 +385,17 @@ def test_ufrgs_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
                     "title": None,
                     "author": None,
                     "date": None,
-                    "text": "x" * 300,
+                    "text": (
+                        "Título UFRGS\n"
+                        "Subtítulo da matéria da UFRGS\n"
+                        "Corpo editorial"
+                    ),
                 }
             )
         return """<doc><main><p>Corpo editorial</p>
           <graphic src="/site/wp-content/uploads/imagem.jpg" /></main></doc>"""
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",
@@ -358,6 +406,8 @@ def test_ufrgs_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
     article = extractor.extract_file(raw_path, url)
 
     assert article["title"] == "Título UFRGS"
+    assert article["subtitle"] == "Subtítulo da matéria da UFRGS"
+    assert article["text"] == "Corpo editorial"
     assert article["date"] == "2021-04-19"
     assert article["images"] == [
         "https://www.ufrgs.br/site/wp-content/uploads/imagem.jpg"
@@ -406,7 +456,7 @@ def test_ufpa_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
             )
         return "<doc><main><p>Corpo editorial</p></main></doc>"
 
-    monkeypatch.setattr("jornais_new.extraction.extract", fake_trafilatura)
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
         tmp_path,
         tmp_path / "articles.jsonl",

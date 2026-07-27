@@ -8,9 +8,9 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_random_exponential
 
-from .config import SiteConfig
-from .http import RetryableHttpStatus, raise_for_retryable_status
-from .io_utils import atomic_write_bytes
+from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status
+from ..shared.io import atomic_write_bytes
+from ..sources.catalog import SiteConfig
 
 
 @dataclass(slots=True)
@@ -34,7 +34,7 @@ class ContentFetcher:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if concurrency < 1 or concurrency > 10:
-            raise ValueError("A concorrencia deve estar entre 1 e 10")
+            raise ValueError("Concurrency must be between 1 and 10")
         self.site = site
         self.raw_directory = raw_directory
         self.concurrency = concurrency
@@ -103,7 +103,7 @@ class ContentFetcher:
                 "status_code": response.status_code,
                 "fetched_at": datetime.now(UTC).isoformat(),
             }
-        except Exception as exc:  # uma URL com falha nao invalida todo o lote
+        except Exception as exc:  # One failed URL does not invalidate the batch.
             return "error", {
                 "stage": "fetching",
                 "url": url,
@@ -123,4 +123,4 @@ class ContentFetcher:
                 response = await client.get(url)
                 raise_for_retryable_status(response)
                 return response
-        raise RuntimeError("Retry sem resultado")  # pragma: no cover
+        raise RuntimeError("Retry completed without a result")  # pragma: no cover

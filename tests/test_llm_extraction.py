@@ -1,7 +1,7 @@
 import os
 from types import SimpleNamespace
 
-from jornais_new.llm_extraction import LLMArticleExtractor
+from university_news.pipeline.llm_extraction import LLMArticleExtractor
 
 
 class FakeStrategy:

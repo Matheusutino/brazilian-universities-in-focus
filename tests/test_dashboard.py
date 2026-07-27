@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from dashboard.data import build_site_summary, discover_sites, load_artifact
+from university_news.dashboard.data import (
+    build_site_summary,
+    discover_sites,
+    load_artifact,
+    load_consolidated_articles,
+    region_for_site,
+)
 
 
 def write_jsonl(path, records) -> None:
@@ -59,3 +65,36 @@ def test_dashboard_ignores_empty_jsonl(tmp_path) -> None:
 
     assert discover_sites(tmp_path) == ["ufrgs"]
     assert load_artifact(tmp_path, "errors").empty
+
+
+def test_dashboard_loads_only_consolidated_articles(tmp_path) -> None:
+    path = tmp_path / "articles.json"
+    path.write_text(
+        json.dumps([{"journal": "USP", "title": "Notícia"}]), encoding="utf-8"
+    )
+
+    articles = load_consolidated_articles(path)
+
+    assert articles.to_dict("records") == [{"journal": "USP", "title": "Notícia"}]
+
+
+def test_dashboard_discards_invalid_article_dates(tmp_path) -> None:
+    path = tmp_path / "articles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"journal": "FURG", "date": "0137-11-26"},
+                {"journal": "USP", "date": "2026-07-17"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    articles = load_consolidated_articles(path)
+
+    assert articles["date"].isna().tolist() == [True, False]
+    assert articles.loc[1, "date"] == "2026-07-17"
+
+
+def test_dashboard_maps_every_supported_university_region() -> None:
+    assert region_for_site("UFT") == "Norte"

@@ -7,8 +7,8 @@ from bs4 import BeautifulSoup
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_random_exponential
 
-from .config import SiteConfig
-from .http import RetryableHttpStatus, raise_for_retryable_status
+from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status
+from ..sources.catalog import SiteConfig
 
 
 @dataclass(slots=True)
@@ -29,7 +29,7 @@ class UrlDiscovery:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if concurrency < 1:
-            raise ValueError("A concorrencia deve ser maior que zero")
+            raise ValueError("Concurrency must be greater than zero")
         self.site = site
         self.concurrency = concurrency
         self.timeout = timeout
@@ -77,7 +77,7 @@ class UrlDiscovery:
             async with semaphore:
                 html = await self._download(client, listing_url)
             return self.parse_urls(html, listing_url), None
-        except Exception as exc:  # uma pagina com falha nao invalida todo o lote
+        except Exception as exc:  # One failed page does not invalidate the batch.
             return set(), {
                 "stage": "discovery",
                 "page": page,
@@ -98,7 +98,7 @@ class UrlDiscovery:
                 response = await client.get(url)
                 raise_for_retryable_status(response)
                 return response.text
-        raise RuntimeError("Retry sem resultado")  # pragma: no cover
+        raise RuntimeError("Retry completed without a result")  # pragma: no cover
 
     def parse_urls(self, html: str, listing_url: str) -> set[str]:
         soup = BeautifulSoup(html, "lxml")

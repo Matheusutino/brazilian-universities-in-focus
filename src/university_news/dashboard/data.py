@@ -1,40 +1,39 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import duckdb
 import pandas as pd
 
+from university_news.sources.catalog import region_for_site
+
 
 ARTIFACTS = ("urls", "manifest", "articles", "errors")
 
-# Região geográfica da sede de cada universidade monitorada.
-SITE_REGIONS = {
-    "ufpa": "Norte",
-    "ufal": "Nordeste",
-    "unb": "Centro-Oeste",
-    "ufms": "Centro-Oeste",
-    "usp": "Sudeste",
-    "unesp": "Sudeste",
-    "ufrgs": "Sul",
-    "ufpr": "Sul",
-    "ufrj": "Sudeste",
-    "uerj": "Sudeste",
-    "ufabc": "Sudeste",
-    "ufmg": "Sudeste",
-    "ufla": "Sudeste",
-    "unicamp": "Sudeste",
-    "unifesp": "Sudeste",
-    "uem": "Sul",
-    "furg": "Sul",
-    "ufc": "Nordeste",
-}
-REGIONS = ("Norte", "Nordeste", "Centro-Oeste", "Sudeste", "Sul")
+# The consolidated corpus starts in 1999; earlier dates are invalid metadata.
+EARLIEST_ARTICLE_DATE = pd.Timestamp("1990-01-01")
 
 
-def region_for_site(site: str) -> str:
-    """Retorna a região brasileira da universidade, ou ``Não mapeada``."""
-    return SITE_REGIONS.get(site.lower(), "Não mapeada")
+def load_consolidated_articles(path: Path) -> pd.DataFrame:
+    """Load the consolidated article source consumed by the dashboard."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"Invalid consolidated JSON at {path}") from exc
+    if not isinstance(records, list):
+        raise ValueError(f"Consolidated JSON must contain a list: {path}")
+    if any(not isinstance(record, dict) for record in records):
+        raise ValueError(f"Consolidated JSON contains an invalid record: {path}")
+    articles = pd.DataFrame(records)
+    if "date" in articles:
+        parsed_dates = pd.to_datetime(
+            articles["date"], format="ISO8601", errors="coerce"
+        )
+        articles.loc[parsed_dates < EARLIEST_ARTICLE_DATE, "date"] = None
+    return articles
 
 
 def discover_sites(data_directory: Path) -> list[str]:
@@ -52,7 +51,7 @@ def artifact_files(
     data_directory: Path, artifact: str, sites: list[str] | None = None
 ) -> list[Path]:
     if artifact not in ARTIFACTS:
-        raise ValueError(f"Artefato desconhecido: {artifact}")
+        raise ValueError(f"Unknown artifact: {artifact}")
     selected = set(sites or discover_sites(data_directory))
     return [
         path

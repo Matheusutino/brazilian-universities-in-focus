@@ -1,6 +1,6 @@
 import httpx
 
-from jornais_new.config import (
+from university_news.sources.catalog import (
     UFAL,
     UFMS,
     UFPA,
@@ -16,11 +16,12 @@ from jornais_new.config import (
     UEM,
     FURG,
     UFC,
+    UFT,
     UNB,
     UNESP,
     USP,
 )
-from jornais_new.discovery import UrlDiscovery
+from university_news.pipeline.discovery import UrlDiscovery
 
 
 def test_usp_page_urls() -> None:
@@ -114,6 +115,34 @@ def test_ufabc_offset_urls_and_listing_selector() -> None:
     assert UrlDiscovery(UFABC).parse_urls(html, UFABC.page_url(10)) == {
         "https://www.ufabc.edu.br/noticias/materia-1",
         "https://www.ufabc.edu.br/noticias/materia-2",
+    }
+
+
+def test_uft_page_urls_and_listing_selector() -> None:
+    assert UFT.page_url(1) == "https://www.uft.edu.br/noticias"
+    assert UFT.page_url(2) == "https://www.uft.edu.br/noticias?page=2"
+    assert UFT.page_url(43) == "https://www.uft.edu.br/noticias?page=43"
+
+    html = """
+    <div id="page-document" class="ui container">
+      <div class="listing news_items">
+        <div class="listing-item">
+          <a class="listing-item-main-link" href="/noticias/materia-1">
+            <h4 class="listing-title">Matéria 1</h4>
+          </a>
+        </div>
+        <div class="listing-item">
+          <a class="listing-item-main-link" href="/noticias/materia-2#top">
+            <h4 class="listing-title">Matéria 2</h4>
+          </a>
+        </div>
+      </div>
+      <div class="pagination-wrapper"><a href="/noticias?page=3">3</a></div>
+    </div>
+    """
+    assert UrlDiscovery(UFT).parse_urls(html, UFT.page_url(2)) == {
+        "https://www.uft.edu.br/noticias/materia-1",
+        "https://www.uft.edu.br/noticias/materia-2",
     }
 
 

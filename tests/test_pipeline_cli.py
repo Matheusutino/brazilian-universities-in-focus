@@ -1,12 +1,12 @@
 import json
 
-from jornais_new import cli
-from jornais_new.config import USP
-from jornais_new.discovery import DiscoveryResult
-from jornais_new.extraction import ExtractionResult
-from jornais_new.fetching import FetchResult
-from jornais_new.io_utils import read_jsonl
-from jornais_new.pipeline import NewsPipeline, PipelineStats
+from university_news import cli
+from university_news.sources.catalog import USP
+from university_news.pipeline.discovery import DiscoveryResult
+from university_news.pipeline.extraction import ExtractionResult
+from university_news.pipeline.fetching import FetchResult
+from university_news.shared.io import read_jsonl
+from university_news.pipeline.orchestration import NewsPipeline, PipelineStats
 
 
 async def test_pipeline_runs_stages_and_writes_artifacts(tmp_path, monkeypatch) -> None:
@@ -46,10 +46,14 @@ async def test_pipeline_runs_stages_and_writes_artifacts(tmp_path, monkeypatch) 
             assert received_urls == sorted(urls)
             return ExtractionResult(extracted=2, skipped=0, errors=[])
 
-    monkeypatch.setattr("jornais_new.pipeline.UrlDiscovery", FakeDiscovery)
-    monkeypatch.setattr("jornais_new.pipeline.ContentFetcher", FakeFetcher)
-    monkeypatch.setattr("jornais_new.pipeline.StructuredExtractor", FakeExtractor)
+    monkeypatch.setattr("university_news.pipeline.orchestration.UrlDiscovery", FakeDiscovery)
+    monkeypatch.setattr("university_news.pipeline.orchestration.ContentFetcher", FakeFetcher)
+    monkeypatch.setattr("university_news.pipeline.orchestration.StructuredExtractor", FakeExtractor)
 
+    (tmp_path / "errors.jsonl").write_text(
+        '{"stage":"discovery","message":"old"}\n',
+        encoding="utf-8",
+    )
     pipeline = NewsPipeline(USP, tmp_path)
     stats = await pipeline.run(start_page=1, end_page=2)
 
@@ -61,10 +65,16 @@ async def test_pipeline_runs_stages_and_writes_artifacts(tmp_path, monkeypatch) 
     )
     assert (tmp_path / "manifest.jsonl").exists()
     assert (tmp_path / "errors.jsonl").exists()
+    assert read_jsonl(tmp_path / "errors.jsonl") == []
     assert json.loads((tmp_path / "discovery.json").read_text())["end_page"] == 2
 
 
 async def test_pipeline_does_not_cache_partial_discovery(tmp_path, monkeypatch) -> None:
+    (tmp_path / "errors.jsonl").write_text(
+        '{"stage":"fetching","message":"old"}\n',
+        encoding="utf-8",
+    )
+
     class PartialDiscovery:
         def __init__(self, *args, **kwargs):
             pass
@@ -75,13 +85,49 @@ async def test_pipeline_does_not_cache_partial_discovery(tmp_path, monkeypatch) 
                 errors=[{"stage": "discovery", "page": 2, "message": "timeout"}],
             )
 
-    monkeypatch.setattr("jornais_new.pipeline.UrlDiscovery", PartialDiscovery)
+    monkeypatch.setattr("university_news.pipeline.orchestration.UrlDiscovery", PartialDiscovery)
     pipeline = NewsPipeline(USP, tmp_path)
     stats = await pipeline.run(start_page=1, end_page=2)
 
     assert stats.discovery_errors == 1
     assert not (tmp_path / "discovery.json").exists()
-    assert read_jsonl(tmp_path / "errors.jsonl")[0]["stage"] == "discovery"
+    errors = read_jsonl(tmp_path / "errors.jsonl")
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "discovery"
+
+
+async def test_pipeline_preserves_previous_errors_when_run_aborts(
+    tmp_path, monkeypatch
+) -> None:
+    old_error = {"stage": "fetching", "message": "old"}
+    (tmp_path / "urls.jsonl").write_text(
+        '{"url":"https://jornal.usp.br/materia/"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "errors.jsonl").write_text(
+        json.dumps(old_error) + "\n",
+        encoding="utf-8",
+    )
+
+    class BrokenFetcher:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def fetch(self, received_urls, *, force=False):
+            raise RuntimeError("interrupted")
+
+    monkeypatch.setattr("university_news.pipeline.orchestration.ContentFetcher", BrokenFetcher)
+    pipeline = NewsPipeline(USP, tmp_path)
+
+    try:
+        await pipeline.run(stage="fetching")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("fetching deveria falhar")
+
+    assert read_jsonl(tmp_path / "errors.jsonl") == [old_error]
+    assert not (tmp_path / ".errors.jsonl.current").exists()
 
 
 async def test_pipeline_runs_each_stage_independently(tmp_path, monkeypatch) -> None:
@@ -114,9 +160,9 @@ async def test_pipeline_runs_each_stage_independently(tmp_path, monkeypatch) -> 
             assert received_urls == [url]
             return ExtractionResult(1, 0, [])
 
-    monkeypatch.setattr("jornais_new.pipeline.UrlDiscovery", FakeDiscovery)
-    monkeypatch.setattr("jornais_new.pipeline.ContentFetcher", FakeFetcher)
-    monkeypatch.setattr("jornais_new.pipeline.StructuredExtractor", FakeExtractor)
+    monkeypatch.setattr("university_news.pipeline.orchestration.UrlDiscovery", FakeDiscovery)
+    monkeypatch.setattr("university_news.pipeline.orchestration.ContentFetcher", FakeFetcher)
+    monkeypatch.setattr("university_news.pipeline.orchestration.StructuredExtractor", FakeExtractor)
     pipeline = NewsPipeline(USP, tmp_path)
 
     discovery_stats = await pipeline.run(stage="discovery", start_page=1, end_page=1)

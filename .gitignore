@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+*.log
 htmlcov/
 build/
 dist/
@@ -28,6 +29,7 @@ raw/
 # Dashboard and local tooling
 .streamlit/
 .cache/
+.tools/
 
 # Editors and operating systems
 .vscode/

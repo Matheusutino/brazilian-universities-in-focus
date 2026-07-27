@@ -10,9 +10,9 @@ from bs4 import BeautifulSoup
 from lxml import etree
 from trafilatura import extract
 
-from .config import SiteConfig
+from ..shared.io import append_jsonl, read_jsonl
+from ..sources.catalog import SiteConfig
 from .fetching import ContentFetcher
-from .io_utils import append_jsonl, read_jsonl
 from .llm_extraction import LLMArticleExtractor
 
 ExtractionMode = Literal["trafilatura", "llm", "hybrid"]
@@ -37,7 +37,7 @@ class StructuredExtractor:
         llm_extractor: LLMArticleExtractor | None = None,
     ) -> None:
         if mode not in {"trafilatura", "llm", "hybrid"}:
-            raise ValueError(f"Extrator invalido: {mode}")
+            raise ValueError(f"Invalid extractor: {mode}")
         self.raw_directory = raw_directory
         self.articles_path = articles_path
         self.mode = mode
@@ -69,7 +69,7 @@ class StructuredExtractor:
             raw_path = self.raw_directory / ContentFetcher.filename_for_url(url)
             if not raw_path.is_file() or raw_path.stat().st_size == 0:
                 errors.append(
-                    self._error(url, "HTMLNotFound", f"HTML ausente: {raw_path}")
+                    self._error(url, "HTMLNotFound", f"HTML not found: {raw_path}")
                 )
                 self._log_progress(
                     index, total, extracted_count, skipped_count, len(errors)
@@ -84,7 +84,7 @@ class StructuredExtractor:
             self._log_progress(index, total, extracted_count, skipped_count, len(errors))
 
         LOGGER.info(
-            "Extraction concluida: total=%s, extraidas=%s, puladas=%s, erros=%s",
+            "Extraction complete: total=%s, extracted=%s, skipped=%s, errors=%s",
             total,
             extracted_count,
             skipped_count,
@@ -100,7 +100,7 @@ class StructuredExtractor:
             return
         if index == total or index % 100 == 0:
             LOGGER.info(
-                "Extraction progresso: %s/%s, extraidas=%s, puladas=%s, erros=%s",
+            "Extraction progress: %s/%s, extracted=%s, skipped=%s, errors=%s",
                 index,
                 total,
                 extracted_count,
@@ -145,14 +145,14 @@ class StructuredExtractor:
     def _extract_with_trafilatura(self, html: str, url: str) -> dict[str, object]:
         payload = extract(html, url=url, output_format="json", with_metadata=True)
         if not payload:
-            raise ValueError("Trafilatura nao encontrou conteudo")
+            raise ValueError("Trafilatura did not find article content")
         metadata = json.loads(payload)
         if not isinstance(metadata, dict):
-            raise ValueError("Saida inesperada do trafilatura")
+            raise ValueError("Unexpected Trafilatura output")
 
         text = self._optional_string(metadata.get("text") or metadata.get("raw_text"))
         if not text:
-            raise ValueError("Extracao sem texto")
+            raise ValueError("Extraction returned no text")
         links, images = self._extract_resources(html, url)
         site_links, site_images = self._extract_site_resources(html, url)
         links = sorted(set(links) | site_links)
@@ -160,7 +160,10 @@ class StructuredExtractor:
         article = {
             "url": url,
             "title": self._optional_string(metadata.get("title")),
-            "subtitle": self._optional_string(metadata.get("description")),
+            # A description from Trafilatura may be social metadata or an
+            # automatic excerpt. Subtitles must come from an explicit site
+            # selector instead.
+            "subtitle": None,
             "author": self._optional_string(metadata.get("author")),
             "date": self._optional_string(metadata.get("date")),
             "text": text,
@@ -171,6 +174,11 @@ class StructuredExtractor:
             "images": images,
         }
         self._enrich_from_site_html(article, html)
+        article["text"] = self._strip_leading_headings(
+            text,
+            article.get("title"),
+            article.get("subtitle"),
+        )
         return article
 
     def _extract_site_resources(
@@ -236,8 +244,8 @@ class StructuredExtractor:
                 )
                 article["author"] = self._optional_string(value)
 
-        # Alguns templates Joomla deixam o crédito como texto solto, sem
-        # elemento próprio (por exemplo: "Escrito por Nome").
+        # Some Joomla templates leave the byline as plain text instead of
+        # placing it in a dedicated element (for example, "Escrito por Nome").
         if not article.get("author"):
             for node in soup.find_all(string=re.compile(r"\bEscrito\s+por\b", re.I)):
                 match = re.search(
@@ -262,6 +270,25 @@ class StructuredExtractor:
             }
             if tags:
                 article["tags"] = sorted(tags)
+
+    @staticmethod
+    def _strip_leading_headings(
+        text: str,
+        title: object,
+        subtitle: object,
+    ) -> str:
+        headings = {
+            " ".join(value.split()).casefold()
+            for value in (title, subtitle)
+            if isinstance(value, str) and value.strip()
+        }
+        if not headings:
+            return text
+        lines = text.splitlines()
+        while lines and " ".join(lines[0].split()).casefold() in headings:
+            lines.pop(0)
+        cleaned = "\n".join(lines).strip()
+        return cleaned or text
 
     @staticmethod
     def _needs_llm(article: dict[str, object]) -> bool:
