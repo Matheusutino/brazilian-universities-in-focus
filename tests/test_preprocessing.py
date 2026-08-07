@@ -90,6 +90,46 @@ def test_preprocess_dry_run_does_not_change_articles(tmp_path, monkeypatch, caps
     assert [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] == [record]
 
 
+def test_preprocess_recovers_usp_column_author_from_url() -> None:
+    article = {
+        "url": (
+            "https://jornal.usp.br/articulistas/"
+            "alecsandra-matias-de-oliveira/artigo/"
+        ),
+        "author": None,
+        "title": "Artigo válido de opinião",
+        "text": "Este texto possui palavras suficientes para passar pelo filtro de qualidade.",
+    }
+
+    accepted, stats = preprocess_records(
+        [article],
+        "usp",
+        PortugueseOnlyDetector(),
+    )
+
+    assert stats.kept == 1
+    assert accepted[0]["author"] == "Alecsandra Matias de Oliveira"
+    assert article["author"] is None
+
+
+def test_preprocess_rejects_usp_column_profile_page() -> None:
+    article = {
+        "url": "https://jornal.usp.br/articulista/jean-pierre-chauvin/",
+        "author": "Incorrect sidebar author",
+        "title": "Jean Pierre Chauvin",
+        "text": "Este perfil contém uma lista extensa de artigos publicados pelo colunista.",
+    }
+
+    accepted, stats = preprocess_records(
+        [article],
+        "usp",
+        PortugueseOnlyDetector(),
+    )
+
+    assert accepted == []
+    assert stats.removed_missing_author == 1
+
+
 def test_compile_adds_journal_to_preprocessed_articles(tmp_path) -> None:
     write_jsonl(
         tmp_path / "sites" / "usp" / PREPROCESSED_ARTICLES_FILENAME,
@@ -103,16 +143,52 @@ def test_compile_adds_journal_to_preprocessed_articles(tmp_path) -> None:
     stats = compile_articles(tmp_path)
 
     assert stats.journals == 2
+    assert stats.source_articles == 2
     assert stats.articles == 2
+    assert stats.duplicate_urls_removed == 0
     assert json.loads((tmp_path / "compiled" / "articles.json").read_text(encoding="utf-8")) == [
         {"url": "https://example/uem", "title": "UEM", "journal": "UEM"},
         {"url": "https://example/usp", "title": "USP", "journal": "USP"},
     ]
+    assert (tmp_path / "compiled" / "dashboard_articles.parquet").is_file()
     manifest = json.loads((tmp_path / "compiled" / "manifest.json").read_text())
     assert manifest["dataset"]["articles"] == 2
     assert manifest["dataset"]["sha256"]
+    assert manifest["dashboard_dataset"]["format"] == "parquet"
+    assert manifest["dashboard_dataset"]["articles"] == 2
+    assert manifest["dashboard_dataset"]["sha256"]
     assert manifest["totals"]["accepted_articles"] == 2
     assert [site["site"] for site in manifest["universities"]] == ["uem", "usp"]
+
+
+def test_compile_removes_duplicate_urls_and_reports_their_site(tmp_path) -> None:
+    write_jsonl(
+        tmp_path / "sites" / "uem" / PREPROCESSED_ARTICLES_FILENAME,
+        [
+            {"url": "https://example/shared", "title": "First"},
+            {"url": "https://example/shared", "title": "Duplicate in UEM"},
+        ],
+    )
+    write_jsonl(
+        tmp_path / "sites" / "usp" / PREPROCESSED_ARTICLES_FILENAME,
+        [
+            {"url": "https://example/shared", "title": "Duplicate in USP"},
+            {"url": "https://example/unique", "title": "Unique"},
+        ],
+    )
+
+    stats = compile_articles(tmp_path)
+
+    articles = json.loads((tmp_path / "compiled" / "articles.json").read_text())
+    manifest = json.loads((tmp_path / "compiled" / "manifest.json").read_text())
+    sites = {site["site"]: site for site in manifest["universities"]}
+    assert [article["title"] for article in articles] == ["First", "Unique"]
+    assert stats.source_articles == 4
+    assert stats.articles == 2
+    assert stats.duplicate_urls_removed == 2
+    assert manifest["totals"]["duplicate_urls_removed"] == 2
+    assert sites["uem"]["duplicate_urls_removed"] == 1
+    assert sites["usp"]["duplicate_urls_removed"] == 1
 
 
 def test_manifest_uses_preprocessing_stats_for_historical_rejections(tmp_path) -> None:

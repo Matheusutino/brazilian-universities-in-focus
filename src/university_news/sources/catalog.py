@@ -26,6 +26,7 @@ class SiteConfig:
     author_selector: str | None = None
     date_selector: str | None = None
     tags_selector: str | None = None
+    excluded_article_path_prefixes: tuple[str, ...] = ()
 
     def page_url(self, page: int) -> str:
         if page < self.start_page:
@@ -58,6 +59,7 @@ USP = SiteConfig(
     end_page=3579,
     rss_url=None,
     content_selector="main#main",
+    excluded_article_path_prefixes=("/articulista/",),
 )
 
 UFAL = SiteConfig(

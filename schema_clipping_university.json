@@ -1,0 +1,639 @@
+{
+  "schema_version": "1.0.0",
+
+  "document": {
+    "document_id": "string",
+    "url": "string|null",
+    "source_university": "string|null",
+    "source_unit": "string|null",
+    "source_channel": "portal_institucional|agencia_de_noticias|jornal|blog|rede_social|outro",
+    "title": "string",
+    "subtitle": "string|null",
+    "author": "string|null",
+    "publication_date": "YYYY-MM-DD|null",
+    "last_update_date": "YYYY-MM-DD|null",
+    "language": "pt-BR",
+    "content_type": "noticia|reportagem|entrevista|artigo|nota|agenda|comunicado|release|outro",
+    "originality": "conteudo_original|republicacao|adaptacao|indeterminado"
+  },
+
+  "processing": {
+    "model": "string",
+    "processed_at": "ISO-8601 datetime",
+    "analysis_status": "complete|partial|insufficient_content",
+    "overall_confidence": 0.0,
+    "warnings": [
+      "string"
+    ]
+  },
+
+  "summary": {
+    "one_sentence": "string",
+    "abstract": "string",
+    "main_message": "string",
+    "scientific_relevance_summary": "string|null",
+    "public_relevance_summary": "string|null"
+  },
+
+  "classification": {
+    "institutional_axes": [
+      {
+        "label": "ensino|pesquisa|extensao|inovacao|gestao|internacionalizacao|cultura|assistencia_estudantil|comunicacao_institucional|outro",
+        "role": "primary|secondary",
+        "confidence": 0.0,
+        "evidence_ids": ["E1"]
+      }
+    ],
+
+    "educational_modalities": [
+      {
+        "label": "educacao_basica|graduacao|pos_graduacao_stricto_sensu|pos_graduacao_lato_sensu|educacao_continuada|formacao_profissional|divulgacao_cientifica|nao_aplicavel",
+        "specific_level": "bacharelado|licenciatura|mestrado|doutorado|especializacao|curso_de_extensao|null",
+        "course_or_program": "string|null",
+        "role": "primary|secondary",
+        "confidence": 0.0,
+        "evidence_ids": ["E2"]
+      }
+    ],
+
+    "news_categories": [
+      {
+        "label": "resultado_de_pesquisa|projeto_de_pesquisa|publicacao_cientifica|evento_cientifico|premiacao|formacao|oportunidade|transferencia_de_tecnologia|prestacao_de_servico|infraestrutura|parceria|internacionalizacao|divulgacao_cientifica|posicionamento_de_especialista|outro",
+        "role": "primary|secondary",
+        "confidence": 0.0,
+        "evidence_ids": ["E1", "E3"]
+      }
+    ],
+
+    "scientific_content_centrality": {
+      "value": "central|relevant|peripheral|absent",
+      "confidence": 0.0,
+      "justification": "string",
+      "evidence_ids": ["E3"]
+    },
+
+    "research_stage": {
+      "value": "proposal|funded|starting|in_progress|preliminary_results|validated_results|completed|technology_transfer|not_applicable|indeterminate",
+      "confidence": 0.0,
+      "evidence_ids": ["E4"]
+    }
+  },
+
+  "five_w_one_h": {
+    "who": {
+      "main_actors": ["ENT1", "ENT2"],
+      "researchers": ["ENT1"],
+      "institutions": ["ENT2"],
+      "partners": ["ENT3"],
+      "beneficiary_groups": ["string"],
+      "target_audiences": ["string"],
+      "confidence": 0.0,
+      "evidence_ids": ["E1", "E5"]
+    },
+
+    "what": {
+      "main_event_or_action": "string",
+      "event_type": "string",
+      "main_result": "string|null",
+      "objects_or_outputs": ["string"],
+      "confidence": 0.0,
+      "evidence_ids": ["E1", "E3"]
+    },
+
+    "when": {
+      "publication_date": "YYYY-MM-DD|null",
+      "event_start": "ISO-8601|null",
+      "event_end": "ISO-8601|null",
+      "reference_period": "string|null",
+      "temporal_status": "past|ongoing|future|recurring|indeterminate",
+      "date_precision": "exact|month|year|relative|unknown",
+      "confidence": 0.0,
+      "evidence_ids": ["E6"]
+    },
+
+    "where": {
+      "locations": [
+        {
+          "name": "string",
+          "city": "string|null",
+          "state": "string|null",
+          "country": "string|null",
+          "location_type": "campus|laboratory|city|state|country|online|other"
+        }
+      ],
+      "geographic_scope": "institutional|local|regional|national|international|global|indeterminate",
+      "confidence": 0.0,
+      "evidence_ids": ["E7"]
+    },
+
+    "why": {
+      "motivation": "string|null",
+      "problem_addressed": "string|null",
+      "scientific_question": "string|null",
+      "societal_need": "string|null",
+      "institutional_goal": "string|null",
+      "confidence": 0.0,
+      "evidence_ids": ["E8"]
+    },
+
+    "how": {
+      "approach": "string|null",
+      "scientific_methods": ["string"],
+      "technologies": ["string"],
+      "activities": ["string"],
+      "resources_or_infrastructure": ["string"],
+      "confidence": 0.0,
+      "evidence_ids": ["E9"]
+    }
+  },
+
+  "entities": [
+    {
+      "entity_id": "ENT1",
+      "entity_type": "person|university|research_group|laboratory|department|company|government_agency|funding_agency|event|project|program|other",
+      "name_as_mentioned": "string",
+      "normalized_name": "string",
+      "affiliation": "string|null",
+      "role_in_news": "researcher|coordinator|student|expert|partner|funder|beneficiary|organizer|spokesperson|other",
+      "academic_level": "undergraduate|master_student|doctoral_student|postdoctoral|faculty|technical_staff|null",
+      "confidence": 0.0,
+      "evidence_ids": ["E5"]
+    }
+  ],
+
+  "topics": {
+    "macro_topics": [
+      {
+        "label": "string",
+        "normalized_label": "string",
+        "relevance": 0.0,
+        "confidence": 0.0,
+        "evidence_ids": ["E3"]
+      }
+    ],
+
+    "subtopics": [
+      {
+        "label": "string",
+        "parent_topic": "string|null",
+        "relevance": 0.0,
+        "confidence": 0.0,
+        "evidence_ids": ["E3"]
+      }
+    ],
+
+    "scientific_fields": [
+      {
+        "label": "string",
+        "taxonomy": "OECD|CNPq|CAPES|OpenAlex|custom",
+        "code": "string|null",
+        "confidence": 0.0,
+        "evidence_ids": ["E3"]
+      }
+    ],
+
+    "keywords": ["string"],
+    "methods": ["string"],
+    "technologies": ["string"],
+    "application_domains": ["string"],
+    "named_concepts": ["string"]
+  },
+
+  "academic_scientific_content": {
+    "research_present": true,
+
+    "projects": [
+      {
+        "project_name": "string|null",
+        "project_status": "planned|in_progress|completed|indeterminate",
+        "coordinating_institution": "ENT2|null",
+        "participating_institutions": ["ENT3"],
+        "funding_agencies": ["ENT4"],
+        "funding_program": "string|null",
+        "funding_amount": {
+          "value": 0.0,
+          "currency": "BRL",
+          "explicitly_stated": false
+        },
+        "start_date": "YYYY-MM-DD|null",
+        "end_date": "YYYY-MM-DD|null",
+        "evidence_ids": ["E4"]
+      }
+    ],
+
+    "research_problem": {
+      "statement": "string|null",
+      "explicitly_stated": true,
+      "confidence": 0.0,
+      "evidence_ids": ["E8"]
+    },
+
+    "objectives": [
+      {
+        "statement": "string",
+        "objective_type": "general|specific|inferred",
+        "confidence": 0.0,
+        "evidence_ids": ["E8"]
+      }
+    ],
+
+    "methodology": [
+      {
+        "method": "string",
+        "method_type": "experimental|observational|computational|qualitative|quantitative|mixed|review|development|other",
+        "explicitly_stated": true,
+        "confidence": 0.0,
+        "evidence_ids": ["E9"]
+      }
+    ],
+
+    "data_and_materials": [
+      {
+        "description": "string",
+        "data_type": "experimental|administrative|survey|sensor|image|text|biological|public_database|other",
+        "openly_available": "yes|no|not_stated",
+        "evidence_ids": ["E9"]
+      }
+    ],
+
+    "findings": [
+      {
+        "statement": "string",
+        "finding_status": "preliminary|validated|claimed|expected|indeterminate",
+        "quantitative": false,
+        "reported_value": "string|null",
+        "limitations_mentioned": ["string"],
+        "confidence": 0.0,
+        "evidence_ids": ["E10"]
+      }
+    ],
+
+    "outputs": [
+      {
+        "output_type": "article|book|dataset|software|patent|prototype|method|report|policy_recommendation|course|event|service|other",
+        "name": "string|null",
+        "url_or_identifier": "string|null",
+        "availability": "open|restricted|commercial|not_stated",
+        "evidence_ids": ["E11"]
+      }
+    ],
+
+    "innovation": {
+      "innovation_present": true,
+      "innovation_type": [
+        "scientific|technological|social|pedagogical|organizational|public_sector"
+      ],
+      "novelty_claim": "string|null",
+      "technology_readiness_level": "1|2|3|4|5|6|7|8|9|null",
+      "trl_explicitly_stated": false,
+      "confidence": 0.0,
+      "evidence_ids": ["E11"]
+    },
+
+    "ethics_and_regulation": {
+      "ethical_issues_mentioned": ["string"],
+      "regulations_or_standards": ["string"],
+      "ethics_approval_mentioned": "yes|no|not_applicable|not_stated",
+      "data_protection_mentioned": "yes|no|not_applicable|not_stated",
+      "evidence_ids": ["E12"]
+    },
+
+    "open_science": {
+      "open_access_publication": "yes|no|not_stated",
+      "open_data": "yes|no|not_stated",
+      "open_source_software": "yes|no|not_stated",
+      "public_repository": "string|null",
+      "reproducibility_information": "present|partial|absent",
+      "evidence_ids": ["E11"]
+    }
+  },
+
+  "societal_relevance": {
+    "problems_addressed": ["string"],
+
+    "beneficiaries": [
+      {
+        "group": "string",
+        "benefit": "string",
+        "benefit_status": "observed|expected|claimed|indeterminate",
+        "confidence": 0.0,
+        "evidence_ids": ["E13"]
+      }
+    ],
+
+    "impact_dimensions": [
+      {
+        "dimension": "scientific|educational|social|economic|environmental|cultural|health|technological|institutional|public_policy",
+        "description": "string",
+        "status": "observed|expected|potential|claimed",
+        "scale": "institutional|local|regional|national|international|indeterminate",
+        "confidence": 0.0,
+        "evidence_ids": ["E13"]
+      }
+    ],
+
+    "public_policy_relation": [
+      {
+        "policy_area": "string",
+        "relationship": "supports|evaluates|informs|implements|criticizes|not_clear",
+        "government_level": "municipal|state|federal|international|not_applicable",
+        "confidence": 0.0,
+        "evidence_ids": ["E14"]
+      }
+    ],
+
+    "sustainable_development_goals": [
+      {
+        "sdg": 4,
+        "relationship": "direct|indirect",
+        "justification": "string",
+        "confidence": 0.0,
+        "evidence_ids": ["E13"]
+      }
+    ]
+  },
+
+  "collaboration_and_reach": {
+    "institutions_involved": ["ENT2", "ENT3"],
+    "collaboration_types": [
+      "intra_university|inter_university|government|industry|civil_society|international"
+    ],
+    "interdisciplinary": {
+      "value": true,
+      "fields_involved": ["string"],
+      "confidence": 0.0,
+      "evidence_ids": ["E3"]
+    },
+    "internationalization": {
+      "present": true,
+      "countries": ["string"],
+      "foreign_institutions": ["ENT3"],
+      "type": "research_collaboration|mobility|joint_program|event|funding|publication|other|null",
+      "confidence": 0.0,
+      "evidence_ids": ["E15"]
+    }
+  },
+
+  "science_communication": {
+    "communication_purpose": [
+      "inform|explain|educate|mobilize|promote_institution|announce|invite|accountability"
+    ],
+
+    "intended_audiences": [
+      {
+        "audience": "general_public|scientific_community|students|teachers|government|industry|journalists|local_community|specific_professionals|other",
+        "priority": "primary|secondary",
+        "confidence": 0.0
+      }
+    ],
+
+    "language_accessibility": {
+      "score_0_4": 0,
+      "technical_jargon_level": "none|low|medium|high",
+      "technical_terms_explained": "all|most|some|none|not_applicable",
+      "readability_assessment": "string",
+      "evidence_ids": ["E16"]
+    },
+
+    "scientific_explanation_depth": {
+      "score_0_4": 0,
+      "problem_explained": true,
+      "method_explained": true,
+      "results_explained": true,
+      "limitations_explained": false,
+      "context_with_previous_knowledge": false,
+      "justification": "string",
+      "evidence_ids": ["E8", "E9", "E10"]
+    },
+
+    "evidence_transparency": {
+      "score_0_4": 0,
+      "scientific_sources_linked": false,
+      "publication_identified": false,
+      "data_or_methods_described": true,
+      "numbers_contextualized": false,
+      "limitations_disclosed": false,
+      "justification": "string",
+      "evidence_ids": ["E10", "E11"]
+    },
+
+    "scientist_visibility": {
+      "researchers_named": true,
+      "students_named": true,
+      "research_groups_named": true,
+      "direct_quotes_from_scientists": 2,
+      "diversity_of_sources": 1,
+      "evidence_ids": ["E5"]
+    },
+
+    "public_engagement": {
+      "interaction_opportunity": "none|comment|registration|event|course|citizen_science|consultation|service|other",
+      "call_to_action": "string|null",
+      "contact_information_present": false,
+      "public_participation_present": false,
+      "evidence_ids": ["E17"]
+    },
+
+    "resources_for_further_information": [
+      {
+        "resource_type": "scientific_article|project_page|dataset|video|podcast|repository|event_page|contact|other",
+        "description": "string",
+        "url": "string|null"
+      }
+    ]
+  },
+
+  "institutional_visibility": {
+    "university_role": "protagonist|co_protagonist|partner|supporter|source_of_expert|merely_mentioned",
+    "units_mentioned": ["string"],
+    "laboratories_and_groups": ["string"],
+    "courses_and_programs": ["string"],
+    "institutional_programs": ["string"],
+    "university_contribution": "string",
+    "contribution_type": [
+      "knowledge|researchers|students|infrastructure|funding|coordination|technology|service"
+    ],
+    "confidence": 0.0,
+    "evidence_ids": ["E1", "E5"]
+  },
+
+  "media_analysis": {
+    "headline_frame": "discovery|solution|impact|institutional_achievement|opportunity|event|controversy|expert_explanation|other",
+    "tone": "informative|promotional|educational|celebratory|critical|alarmist|neutral|mixed",
+    "promotional_intensity": "low|medium|high",
+    "scientific_hype": {
+      "level": "none|low|medium|high",
+      "unsupported_superlatives": ["string"],
+      "causal_overstatement": false,
+      "premature_generalization": false,
+      "justification": "string",
+      "evidence_ids": ["E18"]
+    },
+    "multimedia": {
+      "images": 0,
+      "videos": 0,
+      "audio": 0,
+      "infographics": 0,
+      "captions_present": false,
+      "accessibility_features_mentioned": false
+    },
+    "external_links_count": 0,
+    "scientific_links_count": 0
+  },
+
+  "clipping_intelligence": {
+    "canonical_event_summary": "string",
+    "event_fingerprint": "string",
+    "event_date": "YYYY-MM-DD|null",
+    "main_entities": ["ENT1", "ENT2"],
+    "main_topic": "string",
+
+    "duplicate_assessment": {
+      "likely_republication": false,
+      "duplicate_probability": 0.0,
+      "possible_original_source": "string|null",
+      "distinctive_facts": ["string"]
+    },
+
+    "related_story_keys": [
+      "project_name",
+      "event_name",
+      "researcher_name",
+      "publication_identifier"
+    ],
+
+    "monitoring_priority": {
+      "value": "low|medium|high|critical",
+      "justification": "string"
+    },
+
+    "follow_up_opportunities": [
+      {
+        "type": "new_results|event_completion|publication_release|technology_transfer|policy_adoption|award_result|project_milestone|other",
+        "description": "string",
+        "expected_date": "YYYY-MM-DD|null"
+      }
+    ]
+  },
+
+  "metric_inputs": {
+    "scientific_content": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E3"]
+    },
+
+    "scientific_specificity": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E8", "E9", "E10"]
+    },
+
+    "evidence_quality": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E10", "E11"]
+    },
+
+    "public_accessibility": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E16"]
+    },
+
+    "societal_relevance": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E13"]
+    },
+
+    "institutional_protagonism": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E1", "E5"]
+    },
+
+    "collaboration_breadth": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E15"]
+    },
+
+    "territorial_reach": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E7"]
+    },
+
+    "public_engagement": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E17"]
+    },
+
+    "open_science": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E11"]
+    },
+
+    "student_participation": {
+      "score_0_4": 0,
+      "justification": "string",
+      "confidence": 0.0,
+      "evidence_ids": ["E5"]
+    },
+
+    "final_score": null,
+    "final_score_calculated_by": "external_deterministic_rule"
+  },
+
+  "claims": [
+    {
+      "claim_id": "C1",
+      "statement": "string",
+      "claim_type": "fact|result|impact|causal|forecast|opinion|promotional",
+      "source_status": "explicit|inferred",
+      "verification_status": "supported_by_text|partially_supported|unsupported|requires_external_verification",
+      "confidence": 0.0,
+      "evidence_ids": ["E10"]
+    }
+  ],
+
+  "evidence": [
+    {
+      "evidence_id": "E1",
+      "text": "Trecho exato e curto da notícia.",
+      "location": "title|subtitle|lead|paragraph_1|paragraph_2|caption|other",
+      "supports": [
+        "classification.institutional_axes",
+        "five_w_one_h.what"
+      ]
+    }
+  ],
+
+  "quality_control": {
+    "missing_critical_information": ["string"],
+    "contradictions": [
+      {
+        "description": "string",
+        "evidence_ids": ["E2", "E8"]
+      }
+    ],
+    "unsupported_inferences": ["string"],
+    "ambiguous_entities": ["string"],
+    "dates_requiring_normalization": ["string"],
+    "requires_human_review": false,
+    "human_review_reasons": ["string"]
+  }
+}

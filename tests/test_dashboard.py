@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
+
 from university_news.dashboard.data import (
     build_site_summary,
     discover_sites,
@@ -76,6 +78,7 @@ def test_dashboard_loads_only_consolidated_articles(tmp_path) -> None:
     articles = load_consolidated_articles(path)
 
     assert articles.to_dict("records") == [{"journal": "USP", "title": "Notícia"}]
+    assert all(dtype == object for dtype in articles.dtypes)
 
 
 def test_dashboard_discards_invalid_article_dates(tmp_path) -> None:
@@ -94,6 +97,36 @@ def test_dashboard_discards_invalid_article_dates(tmp_path) -> None:
 
     assert articles["date"].isna().tolist() == [True, False]
     assert articles.loc[1, "date"] == "2026-07-17"
+
+
+def test_dashboard_loads_compact_parquet_artifact(tmp_path) -> None:
+    path = tmp_path / "dashboard_articles.parquet"
+    pd.DataFrame(
+        [
+            {
+                "url": "https://example/usp",
+                "title": "Notícia",
+                "subtitle": "Resumo",
+                "author": "Ana",
+                "date": "2026-07-17",
+                "journal": "USP",
+            }
+        ]
+    ).to_parquet(path)
+
+    articles = load_consolidated_articles(path)
+
+    assert articles.to_dict("records") == [
+        {
+            "url": "https://example/usp",
+            "title": "Notícia",
+            "subtitle": "Resumo",
+            "author": "Ana",
+            "date": "2026-07-17",
+            "journal": "USP",
+        }
+    ]
+    assert all(dtype == object for dtype in articles.dtypes)
 
 
 def test_dashboard_maps_every_supported_university_region() -> None:

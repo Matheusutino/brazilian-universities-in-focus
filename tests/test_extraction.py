@@ -1,6 +1,15 @@
 import json
 
-from university_news.sources.catalog import UFAL, UFMS, UFPA, UFRGS, UFT, UNB, UNESP
+from university_news.sources.catalog import (
+    UFAL,
+    UFMS,
+    UFPA,
+    UFRGS,
+    UFT,
+    UNB,
+    UNESP,
+    USP,
+)
 from university_news.pipeline.extraction import StructuredExtractor
 from university_news.pipeline.fetching import ContentFetcher
 from university_news.shared.io import read_jsonl
@@ -137,6 +146,70 @@ def test_hybrid_uses_llm_when_trafilatura_has_no_author(tmp_path, monkeypatch) -
 
     assert article["author"] == "Autora recuperada"
     assert article["text"] == "Texto extraído pela LLM"
+
+
+def test_usp_column_author_is_derived_from_url(tmp_path, monkeypatch) -> None:
+    url = (
+        "https://jornal.usp.br/articulistas/"
+        "alecsandra-matias-de-oliveira/artigo/"
+    )
+    raw_path = tmp_path / "article.html"
+    raw_path.write_text("<main>Artigo de opinião</main>", encoding="utf-8")
+
+    def fake_trafilatura(*args, **kwargs):
+        if kwargs["output_format"] == "json":
+            return json.dumps(
+                {
+                    "title": "Artigo de opinião",
+                    "author": "Texto capturado incorretamente",
+                    "date": "2026-07-20",
+                    "text": "Conteúdo suficientemente longo do artigo de opinião.",
+                }
+            )
+        return "<doc><main><p>Conteúdo do artigo.</p></main></doc>"
+
+    monkeypatch.setattr(
+        "university_news.pipeline.extraction.extract",
+        fake_trafilatura,
+    )
+
+    article = StructuredExtractor(
+        tmp_path,
+        tmp_path / "articles.jsonl",
+        site=USP,
+    ).extract_file(raw_path, url)
+
+    assert article["author"] == "Alecsandra Matias de Oliveira"
+
+
+def test_usp_column_profile_pages_are_not_extracted(tmp_path, monkeypatch) -> None:
+    url = "https://jornal.usp.br/articulista/alecsandra-matias-de-oliveira/"
+    raw_directory = tmp_path / "raw"
+    raw_directory.mkdir()
+    (raw_directory / ContentFetcher.filename_for_url(url)).write_text(
+        "<main>Perfil da articulista</main>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "university_news.pipeline.extraction.extract",
+        lambda *args, **kwargs: json.dumps(
+            {
+                "title": "Alecsandra Matias de Oliveira",
+                "text": "Perfil e lista de artigos publicados.",
+            }
+        ),
+    )
+
+    articles_path = tmp_path / "articles.jsonl"
+    result = StructuredExtractor(
+        raw_directory,
+        articles_path,
+        site=USP,
+    ).run([url])
+
+    assert result.extracted == 0
+    assert result.skipped == 1
+    assert not articles_path.exists()
 
 
 def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:

@@ -1,7 +1,9 @@
 import argparse
 import hashlib
 import json
+import os
 import re
+import tempfile
 from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -10,21 +12,25 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+import duckdb
 from lingua import Language, LanguageDetectorBuilder
 from tqdm import tqdm
 
 from ..paths import (
     compiled_articles_path,
+    compiled_dashboard_articles_path,
     compiled_manifest_path,
     reports_directory,
     sites_directory,
 )
+from ..shared.articles import DASHBOARD_ARTICLE_COLUMNS
 from ..shared.io import (
     atomic_write_json,
     atomic_write_json_array,
     atomic_write_jsonl,
     read_jsonl,
 )
+from .site_rules import enrich_article_from_url
 
 
 REQUIRED_FIELDS = ("author", "title", "text")
@@ -74,8 +80,11 @@ class PreprocessStats:
 @dataclass(frozen=True, slots=True)
 class CompileStats:
     journals: int
+    source_articles: int
     articles: int
+    duplicate_urls_removed: int
     output: str
+    dashboard_output: str
     manifest: str
 
 
@@ -137,7 +146,8 @@ def preprocess_records_with_rejections(
             }
         )
 
-    for record in records:
+    for source_record in records:
+        record = enrich_article_from_url(source_record, site)
         if not is_nonempty_string(record.get("author")):
             missing_author += 1
             reject(record, "missing_author")
@@ -348,7 +358,11 @@ def _preprocessing_rejection_counts(directory: Path) -> Counter[str]:
     )
 
 
-def _site_manifest(directory: Path, data_root: Path) -> dict[str, Any]:
+def _site_manifest(
+    directory: Path,
+    data_root: Path,
+    duplicate_urls_removed: int = 0,
+) -> dict[str, Any]:
     discovered_count = _count_jsonl(directory / "urls.jsonl")
     downloaded_count = _count_jsonl(directory / "manifest.jsonl")
     extracted_count = _count_jsonl(directory / "articles.jsonl")
@@ -422,6 +436,8 @@ def _site_manifest(directory: Path, data_root: Path) -> dict[str, Any]:
         "raw_html_files": raw_html_count,
         "extracted_articles": extracted_count,
         "accepted_articles": accepted_count,
+        "compiled_articles": max(accepted_count - duplicate_urls_removed, 0),
+        "duplicate_urls_removed": duplicate_urls_removed,
         "removed_articles": removed_count,
         "acceptance_rate": (
             round(accepted_count / extracted_count, 4) if extracted_count else 0.0
@@ -475,10 +491,17 @@ def write_compiled_manifest(
     data_root: Path,
     *,
     output_path: Path,
+    dashboard_output_path: Path,
     articles: int,
+    duplicate_urls_by_site: dict[str, int] | None = None,
 ) -> Path:
+    duplicate_urls_by_site = duplicate_urls_by_site or {}
     site_reports = [
-        _site_manifest(path.parent, data_root)
+        _site_manifest(
+            path.parent,
+            data_root,
+            duplicate_urls_by_site.get(path.parent.name, 0),
+        )
         for path in preprocessed_article_files(data_root)
     ]
     error_stages: Counter[str] = Counter()
@@ -515,6 +538,14 @@ def write_compiled_manifest(
                     data_root,
                 ),
             },
+            "dashboard_dataset": {
+                "path": _relative_path(dashboard_output_path, data_root),
+                "format": "parquet",
+                "columns": list(DASHBOARD_ARTICLE_COLUMNS),
+                "articles": articles,
+                "bytes": dashboard_output_path.stat().st_size,
+                "sha256": _file_sha256(dashboard_output_path),
+            },
             "preprocessing": {
                 "language": "Portuguese",
                 "required_fields": list(REQUIRED_FIELDS),
@@ -544,6 +575,10 @@ def write_compiled_manifest(
                 ),
                 "accepted_articles": sum(
                     int(site["accepted_articles"]) for site in site_reports
+                ),
+                "compiled_articles": articles,
+                "duplicate_urls_removed": sum(
+                    int(site["duplicate_urls_removed"]) for site in site_reports
                 ),
                 "removed_articles": sum(
                     int(site["removed_articles"]) for site in site_reports
@@ -592,6 +627,43 @@ def write_compiled_manifest(
     return path
 
 
+def write_dashboard_parquet(source_path: Path, output_path: Path) -> None:
+    """Atomically create the dashboard's compact projection of the corpus."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.",
+        dir=output_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    temporary_path.unlink()
+    projections = ",\n".join(
+        f"json_extract_string(json, '$.{column}') AS {column}"
+        for column in DASHBOARD_ARTICLE_COLUMNS
+    )
+    quoted_output = str(temporary_path).replace("'", "''")
+    try:
+        with duckdb.connect() as connection:
+            connection.execute(
+                f"""
+                COPY (
+                    SELECT {projections}
+                    FROM read_json_objects(?, format = 'array')
+                )
+                TO '{quoted_output}'
+                (FORMAT PARQUET, COMPRESSION ZSTD)
+                """,
+                [str(source_path.resolve())],
+            )
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def compile_articles(
     data_root: Path,
     *,
@@ -599,23 +671,45 @@ def compile_articles(
 ) -> CompileStats:
     output_path = output_path or compiled_articles_path(data_root)
     sources = preprocessed_article_files(data_root)
+    duplicate_urls_by_site: Counter[str] = Counter()
+    seen_urls: set[str] = set()
+    source_articles = 0
 
     def compiled_records():
+        nonlocal source_articles
         for path in sources:
             journal = path.parent.name.upper()
             for record in _iter_jsonl(path):
+                source_articles += 1
+                url = record.get("url")
+                if isinstance(url, str) and (url_key := url.strip()):
+                    if url_key in seen_urls:
+                        duplicate_urls_by_site[path.parent.name] += 1
+                        continue
+                    seen_urls.add(url_key)
                 yield record | {"journal": journal}
 
     articles = atomic_write_json_array(output_path, compiled_records())
+    dashboard_output_path = (
+        compiled_dashboard_articles_path(data_root)
+        if output_path == compiled_articles_path(data_root)
+        else output_path.parent / "dashboard_articles.parquet"
+    )
+    write_dashboard_parquet(output_path, dashboard_output_path)
     manifest_path = write_compiled_manifest(
         data_root,
         output_path=output_path,
+        dashboard_output_path=dashboard_output_path,
         articles=articles,
+        duplicate_urls_by_site=dict(duplicate_urls_by_site),
     )
     return CompileStats(
         journals=len(sources),
+        source_articles=source_articles,
         articles=articles,
+        duplicate_urls_removed=sum(duplicate_urls_by_site.values()),
         output=str(output_path),
+        dashboard_output=str(dashboard_output_path),
         manifest=str(manifest_path),
     )
 

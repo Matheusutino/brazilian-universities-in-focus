@@ -14,6 +14,8 @@ dependencies = [
     "lingua-language-detector>=2.2.0",
     "llama-cpp-python>=0.3.20",
     "lxml>=5.2.2",
+    "jsonschema>=4.23.0,<5",
+    "openai>=2.0.0,<3",
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.1",
     "rank-bm25>=0.2.2",
@@ -30,6 +32,7 @@ university-news-preprocess = "university_news.pipeline.preprocessing:main"
 university-news-compile = "university_news.pipeline.preprocessing:compile_main"
 university-news-index = "university_news.search.vector_index:main"
 university-news-analyze = "university_news.analysis.quality:main"
+university-news-enrich = "university_news.enrichment.runner:main"
 
 [dependency-groups]
 dev = [

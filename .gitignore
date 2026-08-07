@@ -27,7 +27,8 @@ data/
 raw/
 
 # Dashboard and local tooling
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 .cache/
 .tools/
 

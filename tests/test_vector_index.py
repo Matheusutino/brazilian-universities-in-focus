@@ -7,6 +7,7 @@ from university_news.search.embeddings import (
 )
 from university_news.search.vector_index import (
     article_content,
+    deduplicate_articles,
     index_articles,
     valid_date,
 )
@@ -83,6 +84,19 @@ def test_invalid_or_historical_dates_are_not_indexed() -> None:
     assert valid_date("sem data") is None
 
 
+def test_index_deduplicates_articles_by_url() -> None:
+    articles, removed = deduplicate_articles(
+        [
+            {"url": "https://example/article", "title": "First"},
+            {"url": "https://example/article", "title": "Duplicate"},
+            {"url": "https://example/other", "title": "Other"},
+        ]
+    )
+
+    assert [article["title"] for article in articles] == ["First", "Other"]
+    assert removed == 1
+
+
 class StaticIndexEmbedder:
     dimension = 3
     model_repo = "test/model"
@@ -138,5 +152,6 @@ def test_lancedb_index_is_incremental_and_removes_stale_articles(tmp_path) -> No
     )
 
     assert (first.indexed, first.skipped, first.removed) == (2, 0, 0)
+    assert first.duplicate_urls_removed == 0
     assert (second.indexed, second.skipped, second.removed) == (0, 2, 0)
     assert (third.indexed, third.skipped, third.removed) == (0, 1, 1)

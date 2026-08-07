@@ -41,6 +41,7 @@ class IndexStats:
     indexed: int
     skipped: int
     removed: int
+    duplicate_urls_removed: int
     truncated: int
     source: str
     database: str
@@ -54,6 +55,25 @@ def load_articles(path: Path) -> list[dict[str, Any]]:
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise ValueError("The consolidated JSON must contain a list of objects")
     return value
+
+
+def deduplicate_articles(
+    articles: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    unique: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    duplicates = 0
+    for article in articles:
+        url = article.get("url")
+        if not isinstance(url, str) or not (url_key := url.strip()):
+            unique.append(article)
+            continue
+        if url_key in seen_urls:
+            duplicates += 1
+            continue
+        seen_urls.add(url_key)
+        unique.append(article)
+    return unique, duplicates
 
 
 def article_id(article: dict[str, Any]) -> str:
@@ -256,11 +276,12 @@ def index_articles(
 ) -> IndexStats:
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    articles = [
+    eligible_articles = [
         article
         for article in load_articles(source)
         if article.get("url") and article_content(article)
     ]
+    articles, duplicate_urls_removed = deduplicate_articles(eligible_articles)
     embedder = embedder or QwenGGUFEmbedder()
     database = database or connect_database(database_path)
     table = open_or_create_table(
@@ -351,6 +372,7 @@ def index_articles(
         indexed=len(pending),
         skipped=skipped,
         removed=len(stale_ids),
+        duplicate_urls_removed=duplicate_urls_removed,
         truncated=truncated_total,
         source=str(source),
         database=str(database_path),

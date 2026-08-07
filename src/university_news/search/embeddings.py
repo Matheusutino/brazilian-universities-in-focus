@@ -8,6 +8,7 @@ from typing import Any
 DEFAULT_MODEL_REPO = "Qwen/Qwen3-Embedding-0.6B-GGUF"
 DEFAULT_MODEL_FILE = "Qwen3-Embedding-0.6B-Q8_0.gguf"
 DEFAULT_CONTEXT_LENGTH = 32_768
+DEFAULT_QUERY_CONTEXT_LENGTH = 1_024
 QUERY_INSTRUCTION = (
     "Given a search query in Portuguese, retrieve relevant news articles "
     "about Brazilian universities"

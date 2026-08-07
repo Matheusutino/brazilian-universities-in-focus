@@ -14,6 +14,7 @@ from ..shared.io import append_jsonl, read_jsonl
 from ..sources.catalog import SiteConfig
 from .fetching import ContentFetcher
 from .llm_extraction import LLMArticleExtractor
+from .site_rules import enrich_article_from_url
 
 ExtractionMode = Literal["trafilatura", "llm", "hybrid"]
 LOGGER = logging.getLogger(__name__)
@@ -60,6 +61,12 @@ class StructuredExtractor:
         )
 
         for index, url in enumerate(urls, start=1):
+            if self._is_excluded_article_url(url):
+                skipped_count += 1
+                self._log_progress(
+                    index, total, extracted_count, skipped_count, len(errors)
+                )
+                continue
             if url in processed:
                 skipped_count += 1
                 self._log_progress(
@@ -174,6 +181,7 @@ class StructuredExtractor:
             "images": images,
         }
         self._enrich_from_site_html(article, html)
+        self._enrich_from_url(article, url)
         article["text"] = self._strip_leading_headings(
             text,
             article.get("title"),
@@ -270,6 +278,24 @@ class StructuredExtractor:
             }
             if tags:
                 article["tags"] = sorted(tags)
+
+    def _is_excluded_article_url(self, url: str) -> bool:
+        if self.site is None:
+            return False
+        path = urlsplit(url).path
+        return any(
+            path.startswith(prefix)
+            for prefix in self.site.excluded_article_path_prefixes
+        )
+
+    def _enrich_from_url(
+        self,
+        article: dict[str, object],
+        url: str,
+    ) -> None:
+        if self.site is None:
+            return
+        article.update(enrich_article_from_url(article, self.site.name))
 
     @staticmethod
     def _strip_leading_headings(

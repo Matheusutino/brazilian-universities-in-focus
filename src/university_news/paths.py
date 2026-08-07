@@ -25,8 +25,17 @@ def logs_directory(data_root: Path) -> Path:
     return data_root / "logs"
 
 
+def clipping_enrichment_directory(data_root: Path, schema_version: str) -> Path:
+    normalized_version = schema_version.removeprefix("v")
+    return data_root / "enriched" / "clipping" / f"v{normalized_version}"
+
+
 def compiled_articles_path(data_root: Path) -> Path:
     return compiled_directory(data_root) / "articles.json"
+
+
+def compiled_dashboard_articles_path(data_root: Path) -> Path:
+    return compiled_directory(data_root) / "dashboard_articles.parquet"
 
 
 def compiled_manifest_path(data_root: Path) -> Path:

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 
 import duckdb
 import pandas as pd
 
+from university_news.shared.articles import DASHBOARD_ARTICLE_COLUMNS
 from university_news.sources.catalog import region_for_site
 
 
@@ -16,18 +16,47 @@ EARLIEST_ARTICLE_DATE = pd.Timestamp("1990-01-01")
 
 
 def load_consolidated_articles(path: Path) -> pd.DataFrame:
-    """Load the consolidated article source consumed by the dashboard."""
+    """Stream only the corpus fields used by the dashboard.
+
+    Reading the complete JSON with ``json.loads`` retains every article body and
+    nested metadata object in memory. The dashboard only needs the fields below,
+    so DuckDB projects them while scanning the JSON array.
+    """
     if not path.is_file() or path.stat().st_size == 0:
         return pd.DataFrame()
     try:
-        records = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        if path.suffix.lower() == ".parquet":
+            articles = pd.read_parquet(
+                path,
+                columns=list(DASHBOARD_ARTICLE_COLUMNS),
+            ).astype(object)
+            articles["_json_type"] = "OBJECT"
+        else:
+            projections = ",\n".join(
+                f"json_extract_string(json, '$.{column}') AS {column}"
+                for column in DASHBOARD_ARTICLE_COLUMNS
+            )
+            with duckdb.connect() as connection:
+                articles = connection.execute(
+                    f"""
+                    SELECT
+                        json_type(json) AS _json_type,
+                        {projections}
+                    FROM read_json_objects(?, format = 'array')
+                    """,
+                    [str(path.resolve())],
+                ).df()
+                # Streamlit reuses cached values from different script-runner
+                # threads. Materialize DuckDB's Arrow-backed strings while the
+                # connection is alive so cached frames do not retain native
+                # buffers owned by the result.
+                articles = articles.astype(object)
+    except (duckdb.Error, OSError) as exc:
         raise ValueError(f"Invalid consolidated JSON at {path}") from exc
-    if not isinstance(records, list):
-        raise ValueError(f"Consolidated JSON must contain a list: {path}")
-    if any(not isinstance(record, dict) for record in records):
+
+    if not articles["_json_type"].eq("OBJECT").all():
         raise ValueError(f"Consolidated JSON contains an invalid record: {path}")
-    articles = pd.DataFrame(records)
+    articles = articles.drop(columns="_json_type").dropna(axis="columns", how="all")
     if "date" in articles:
         parsed_dates = pd.to_datetime(
             articles["date"], format="ISO8601", errors="coerce"
