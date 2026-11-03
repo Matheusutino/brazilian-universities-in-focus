@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Explorar · Universidades em Foco{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <div class="eyebrow">Explorar o acervo</div>
+  <h1 class="page-title">O Brasil que pesquisa, em notícias.</h1>
+  <p>Busque por tema, pessoa ou instituição. A busca entende o significado da consulta e também as palavras exatas.</p>
+</section>
+<form id="explore-form" role="search">
+  <div class="search-bar">
+    <input type="search" name="q" placeholder="Ex.: mudanças climáticas, saúde pública, inteligência artificial…" aria-label="Buscar no acervo">
+    <button class="button primary" type="submit">Buscar</button>
+  </div>
+  <details class="filters">
+    <summary>Filtros</summary>
+    <div class="filter-grid">
+      <label>Região
+        <select name="region"><option value="">Todas as regiões</option>{% for region in stats.regions %}<option>{{ region }}</option>{% endfor %}</select>
+      </label>
+      <label>Universidade
+        <select name="university"><option value="">Todas as universidades</option>
+          {% for item in stats.universities | sort(attribute="journal") %}<option value="{{ item.journal }}" data-region="{{ item.region }}">{{ item.journal }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>De<input type="date" name="from"></label>
+      <label>Até<input type="date" name="to"></label>
+      {% if facets.categories %}
+      <label>Categoria
+        <select name="category"><option value="">Todas</option>{% for value, name in facets.categories %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select>
+      </label>
+      <label>Grande área (CNPq)
+        <select name="field"><option value="">Todas</option>{% for value, name in facets.fields %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select>
+      </label>
+      <label>Tipo
+        <select name="type"><option value="">Todos</option>{% for value, name in facets.types %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select>
+      </label>
+      <label class="check"><input type="checkbox" name="analyzed" value="1"> Só notícias analisadas</label>
+      {% endif %}
+    </div>
+    <div class="filter-actions">
+      <button class="button" type="submit">Aplicar</button>
+      <button class="button" type="reset" id="clear-filters">Limpar</button>
+    </div>
+  </details>
+</form>
+<div class="chips" id="summary-chips" aria-live="polite"></div>
+<div class="section-head"><h2 class="section-title" id="results-title">Últimas notícias</h2><div class="section-note" id="results-note"></div></div>
+<div class="status-line" id="status-line" aria-live="polite"></div>
+<div id="results" class="card-grid"></div>
+<nav class="pagination" aria-label="Paginação">
+  <button class="button" type="button" id="previous-page">← Anterior</button>
+  <span class="pager" id="page-label"></span>
+  <button class="button" type="button" id="next-page">Próxima →</button>
+</nav>
+<noscript><p class="empty-state">Ative o JavaScript para buscar no acervo.</p></noscript>
+<script type="application/json" id="labels-data">{{ labels_json | safe }}</script>
+{% endblock %}
+{% block scripts %}<script src="/static/js/explore.js?v={{ version }}" defer></script>{% endblock %}

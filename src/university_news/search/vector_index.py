@@ -3,18 +3,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import uuid
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dotenv import load_dotenv
 from tqdm import tqdm
 
 from ..paths import DEFAULT_DATA_ROOT, compiled_articles_path, indexes_directory
+from ..settings import config_section
 from ..sources.catalog import region_for_site
 from .embeddings import (
     DEFAULT_CONTEXT_LENGTH,
@@ -26,9 +25,6 @@ from .embeddings import (
 if TYPE_CHECKING:
     import pyarrow as pa
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-load_dotenv(PROJECT_ROOT / ".env")
 
 DEFAULT_DATABASE = indexes_directory(DEFAULT_DATA_ROOT) / "lancedb"
 DEFAULT_TABLE = "university_articles"
@@ -211,8 +207,24 @@ def index_records(table: Any, records: list[dict[str, Any]]) -> None:
     )
 
 
+# Versions younger than this are kept, so a concurrent reader or writer never
+# loses the files it is using.
+DEFAULT_VERSION_RETENTION = timedelta(hours=1)
+
+
+def compact_table(
+    table: Any, *, keep_versions_for: timedelta = DEFAULT_VERSION_RETENTION
+) -> None:
+    """Merge small fragments, refresh indices, and delete old table versions.
+
+    Every write creates a new version and a small data file. Without this,
+    row-by-row indexing grows the table to many gigabytes and slows search.
+    """
+    table.optimize(cleanup_older_than=keep_versions_for)
+
+
 def ensure_indexes(table: Any, *, rebuild: bool) -> None:
-    from lancedb.index import BTree, Bitmap, HnswSq
+    from lancedb.index import Bitmap, BTree, HnswSq
 
     existing_columns = {
         column
@@ -366,6 +378,7 @@ def index_articles(
         table.delete(f"article_id IN ({values})")
 
     ensure_indexes(table, rebuild=recreate)
+    compact_table(table)
     write_metadata(database_path, table=table_name, embedder=embedder)
     return IndexStats(
         table=table_name,
@@ -380,6 +393,9 @@ def index_articles(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    search = config_section("search")
+    embedding = config_section("embedding")
+    configured_model_path = str(embedding.get("model_path", "")).strip()
     parser = argparse.ArgumentParser(
         prog="university-news-index",
         description="Index compiled articles in LanceDB with Qwen3 Embedding GGUF.",
@@ -392,50 +408,67 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--database",
         type=Path,
-        default=Path(os.environ.get("LANCEDB_PATH", str(DEFAULT_DATABASE))),
+        default=Path(str(search.get("lancedb_path", DEFAULT_DATABASE))),
     )
     parser.add_argument(
         "--table",
-        default=os.environ.get("LANCEDB_TABLE", DEFAULT_TABLE),
+        default=str(search.get("lancedb_table", DEFAULT_TABLE)),
     )
     parser.add_argument(
         "--model-path",
         type=Path,
-        default=(
-            Path(value)
-            if (value := os.environ.get("EMBEDDING_MODEL_PATH"))
-            else None
-        ),
+        default=Path(configured_model_path) if configured_model_path else None,
     )
     parser.add_argument(
         "--model-repo",
-        default=os.environ.get("EMBEDDING_MODEL_REPO", DEFAULT_MODEL_REPO),
+        default=str(embedding.get("model_repo", DEFAULT_MODEL_REPO)),
     )
     parser.add_argument(
         "--model-file",
-        default=os.environ.get("EMBEDDING_MODEL_FILE", DEFAULT_MODEL_FILE),
+        default=str(embedding.get("model_file", DEFAULT_MODEL_FILE)),
     )
     parser.add_argument(
         "--context-length",
         type=int,
-        default=int(
-            os.environ.get("EMBEDDING_CONTEXT_LENGTH", DEFAULT_CONTEXT_LENGTH)
-        ),
+        default=int(embedding.get("context_length", DEFAULT_CONTEXT_LENGTH)),
     )
-    parser.add_argument("--threads", type=int)
+    parser.add_argument("--threads", type=int, default=int(embedding.get("threads", 8)))
     parser.add_argument(
         "--gpu-layers",
         type=int,
-        default=int(os.environ.get("EMBEDDING_GPU_LAYERS", "-1")),
+        default=int(embedding.get("gpu_layers", -1)),
         help="-1 offloads every layer to the GPU; 0 forces CPU",
     )
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--batch-size", type=int, default=int(embedding.get("batch_size", 8))
+    )
     parser.add_argument("--recreate", action="store_true")
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Only compact the table and delete old versions (no model is loaded)",
+    )
+    parser.add_argument(
+        "--keep-versions-hours",
+        type=float,
+        default=DEFAULT_VERSION_RETENTION.total_seconds() / 3600,
+        help="With --optimize: keep versions newer than this (0 when no writer runs)",
+    )
     return parser
 
 
 def run(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.optimize:
+        try:
+            table = connect_database(args.database).open_table(args.table)
+            rows = table.count_rows()
+            compact_table(table, keep_versions_for=timedelta(hours=args.keep_versions_hours))
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"Optimization failed: {exc}")
+            return 1
+        print(json.dumps({"table": args.table, "rows": rows, "optimized": True}))
+        return 0
     try:
         embedder = QwenGGUFEmbedder(
             model_path=args.model_path,

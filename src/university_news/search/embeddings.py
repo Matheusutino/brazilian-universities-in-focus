@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,9 @@ class QwenGGUFEmbedder:
         self.model_repo = model_repo
         self.model_file = model_file
         self.model_path = str(model_path.resolve()) if model_path is not None else None
+        # A llama.cpp context is not thread-safe: concurrent calls (two
+        # website requests searching at once) crash the process with SIGSEGV.
+        self._lock = threading.Lock()
         if backend is not None:
             self.model = backend
             return
@@ -101,12 +105,13 @@ class QwenGGUFEmbedder:
         return shortened, True
 
     def _encode(self, texts: list[str]) -> EmbeddedBatch:
-        prepared = [self._truncate(text) for text in texts]
-        raw_vectors = self.model.embed(
-            input=[text for text, _ in prepared],
-            normalize=False,
-            truncate=False,
-        )
+        with self._lock:
+            prepared = [self._truncate(text) for text in texts]
+            raw_vectors = self.model.embed(
+                input=[text for text, _ in prepared],
+                normalize=False,
+                truncate=False,
+            )
         vectors = [list(map(float, vector)) for vector in raw_vectors]
         if len(vectors) != len(texts):
             raise RuntimeError("The model returned an unexpected number of vectors")

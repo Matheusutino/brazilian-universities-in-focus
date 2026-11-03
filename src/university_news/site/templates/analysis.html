@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "macros.html" import bar_chart, stats_strip, section_head %}
+{% block title %}Análises · Universidades em Foco{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <div class="eyebrow">Análise por LLM</div>
+  <h1 class="page-title">O que as universidades comunicam</h1>
+  <p>Cada notícia é lida por um modelo de linguagem que identifica tema, área do conhecimento, tipo de conteúdo, impacto social e estilo de comunicação. Os números cobrem apenas as notícias já analisadas. Veja os <a href="/criterios/">critérios de classificação</a>.</p>
+</section>
+{% if not stats.annotated %}
+<div class="empty-state">Nenhuma análise publicada ainda.</div>
+{% else %}
+<div class="filter-grid" style="padding:0;margin-bottom:1rem">
+  <label>Região
+    <select id="scope-region"><option value="">Todas as regiões</option>{% for region in stats.regions %}<option>{{ region }}</option>{% endfor %}</select>
+  </label>
+  <label>Universidade
+    <select id="scope-university"><option value="">Todas as universidades</option>
+      {% for item in stats.universities | sort(attribute="journal") %}<option value="{{ item.journal }}" data-region="{{ item.region }}">{{ item.journal }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" id="show-tables"> Mostrar tabelas</label>
+</div>
+{% set scope = stats.analysis["all"] %}
+<div id="scope-stats">
+{{ stats_strip([
+  (scope.annotated | count, "notícias analisadas"),
+  (scope.annotated | coverage(scope.articles), "do acervo no recorte"),
+  (scope.research_share | percent, "relatam pesquisa"),
+  (scope.models | length, "modelos usados"),
+]) }}
+</div>
+<div class="chart-grid" id="charts">
+  {% for chart in scope.charts %}{{ bar_chart(chart, wide=chart.key == "sdgs") }}{% endfor %}
+</div>
+{{ section_head("Palavras-chave mais frequentes", "top 30") }}
+<div class="chips" id="keywords">{% for row in scope.keywords %}<span class="chip">{{ row.label }} <strong>{{ row.count }}</strong></span>{% endfor %}</div>
+{{ section_head("Proveniência dos dados", "modelos e configurações") }}
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>Modelo</th><th>Provedor</th><th>Prompt (SHA-256)</th><th>Anotações</th></tr></thead>
+    <tbody>
+      {% for profile in profiles %}
+      <tr><td>{{ profile.model }}</td><td>{{ profile.provider }}</td><td><code>{{ (profile.prompt_sha256 or "")[:12] }}</code></td><td>{{ profile.annotations | count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="chart-note" style="margin-top:.6rem">Os campos são gerados automaticamente e podem conter erros. Os prompts e o contrato completos de cada perfil acompanham os dados publicados.</p>
+<script type="application/json" id="analysis-data">{{ analysis_json | safe }}</script>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="/static/js/analysis.js?v={{ version }}" defer></script>{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "macros.html" import card, stats_strip, section_head %}
+{% block content %}
+<section class="hero">
+  <div class="eyebrow">Notícias universitárias brasileiras</div>
+  <h1 class="hero-title">Conhecimento público,<br><em>em um só lugar.</em></h1>
+  <p>Uma visão integrada da ciência, da cultura e da sociedade produzida pelas universidades públicas do Brasil, com busca por significado e por palavras-chave.</p>
+</section>
+<form class="search-bar" action="/explorar/" method="get" role="search">
+  <input type="search" name="q" placeholder="Ex.: mudanças climáticas, saúde pública, inteligência artificial…" aria-label="Buscar no acervo">
+  <button class="button primary" type="submit">Buscar</button>
+</form>
+{{ stats_strip([
+  (stats.articles | count, "notícias no acervo"),
+  (stats.universities | length, "universidades acompanhadas"),
+  (stats.regions | length, "regiões do país"),
+  (stats.earliest_year ~ "–" ~ stats.latest_year if stats.earliest_year else "—", "cobertura temporal"),
+]) }}
+<div class="actions">
+  <a class="button" href="/explorar/">Explorar notícias</a>
+  <a class="button" href="/analises/">Ver análises</a>
+  <a class="button" href="/universidades/">Conhecer universidades</a>
+</div>
+{{ section_head("Publicações recentes", "direto das fontes oficiais") }}
+<div class="card-grid">
+  {% for article in latest %}{{ card(article) }}{% endfor %}
+</div>
+{% endblock %}

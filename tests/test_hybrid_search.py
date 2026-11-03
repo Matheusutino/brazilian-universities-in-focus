@@ -1,84 +1,14 @@
 from datetime import date
 
-from university_news.search.hybrid import (
-    HybridNewsSearch,
-    LanceDBRetriever,
-    LexicalOnlyRetriever,
-    SearchFilters,
-    article_id,
-    lance_filter,
-)
+from university_news.search.hybrid import SearchFilters, lance_filter, rrf_fuse
+from university_news.site.search import lancedb_semantic
 
 
-class StaticSemantic:
-    def __init__(self, identifiers):
-        self.identifiers = identifiers
+def test_rrf_fuse_rewards_documents_ranked_by_both_retrievers() -> None:
+    scores = rrf_fuse(["semantic", "both"], ["lexical", "both"])
 
-    def search(self, query, limit, filters=SearchFilters()):
-        assert query == "pesquisa climática"
-        self.filters = filters
-        return self.identifiers[:limit]
-
-
-def test_hybrid_search_fuses_bm25_with_semantic_and_filters_results() -> None:
-    articles = [
-        {"url": "https://example/usp", "journal": "USP", "date": "2025-01-10", "title": "Pesquisa climática", "text": "Estudo sobre mudanças climáticas no Brasil."},
-        {"url": "https://example/ufms", "journal": "UFMS", "date": "2025-01-12", "title": "Pesquisa", "text": "Notícia diferente."},
-        {"url": "https://example/uem", "journal": "UEM", "date": "2024-01-12", "title": "Clima", "text": "Mudanças climáticas e pesquisa científica."},
-    ]
-    search = HybridNewsSearch(articles, StaticSemantic([article_id(articles[1]), article_id(articles[0])]))
-
-    results = search.search(
-        "pesquisa climática",
-        filters=SearchFilters(regions=("Sudeste",), start_date=date(2025, 1, 1)),
-        candidates=30,
-        limit=10,
-    )
-
-    assert [result.article["journal"] for result in results] == ["USP"]
-    assert results[0].semantic_rank == 2
-    assert results[0].lexical_rank == 1
-
-
-def test_hybrid_search_rejects_invalid_dates_when_filtering() -> None:
-    article = {
-        "url": "https://example/furg",
-        "journal": "FURG",
-        "date": "0137-11-26",
-        "title": "Pesquisa",
-        "text": "Pesquisa universitária.",
-    }
-    search = HybridNewsSearch([article], StaticSemantic([article_id(article)]))
-
-    results = search.search(
-        "pesquisa climática",
-        filters=SearchFilters(start_date=date(2000, 1, 1)),
-    )
-
-    assert results == []
-
-
-def test_hybrid_search_can_run_without_vector_service() -> None:
-    articles = [
-        {
-            "url": "https://example/usp",
-            "journal": "USP",
-            "title": "Vacina brasileira avança",
-            "text": "Pesquisa em saúde pública.",
-        },
-        {
-            "url": "https://example/ufpa",
-            "journal": "UFPA",
-            "title": "Festival de música",
-            "text": "Programação cultural.",
-        },
-    ]
-
-    results = HybridNewsSearch(articles, LexicalOnlyRetriever()).search("vacina")
-
-    assert [result.article["journal"] for result in results] == ["USP"]
-    assert results[0].lexical_rank == 1
-    assert results[0].semantic_rank is None
+    assert max(scores, key=scores.get) == "both"
+    assert scores["semantic"] == scores["lexical"]
 
 
 def test_lance_filter_escapes_values_and_applies_dates_before_search() -> None:
@@ -93,12 +23,6 @@ def test_lance_filter_escapes_values_and_applies_dates_before_search() -> None:
         "journal IN ('USP', 'D''ÁVILA') AND region IN ('Sudeste') "
         "AND date >= '2024-01-01' AND date <= '2025-12-31'"
     )
-
-
-class StaticEmbedder:
-    def encode_query(self, query):
-        assert query == "pesquisa"
-        return [1.0, 2.0]
 
 
 class FakeLanceQuery:
@@ -138,15 +62,11 @@ class FakeLanceTable:
         return self.query
 
 
-def test_lancedb_retriever_uses_prefilter() -> None:
+def test_semantic_search_pushes_filters_into_lancedb() -> None:
     table = FakeLanceTable()
-    retriever = LanceDBRetriever(table, StaticEmbedder())
+    search = lancedb_semantic(table)
 
-    identifiers = retriever.search(
-        "pesquisa",
-        5,
-        SearchFilters(journals=("USP",)),
-    )
+    identifiers = search([1.0, 2.0], 5, SearchFilters(journals=("USP",)))
 
     assert identifiers == ["first", "second"]
     assert table.query.condition == "journal IN ('USP')"

@@ -19,6 +19,7 @@ env/
 
 # Local secrets
 .env
+deploy/systemd/generated/
 .env.*
 !.env.example
 
@@ -26,9 +27,7 @@ env/
 data/
 raw/
 
-# Dashboard and local tooling
-.streamlit/*
-!.streamlit/config.toml
+# Local tooling
 .cache/
 .tools/
 

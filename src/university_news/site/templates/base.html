@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Universidades em Foco{% endblock %}</title>
+  <meta name="description" content="{% block description %}Notícias de universidades públicas brasileiras, organizadas e analisadas para pesquisa sobre comunicação universitária.{% endblock %}">
+  <link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400..800&family=Newsreader:opsz,wght@6..72,500..700&display=swap">
+  <link rel="stylesheet" href="/static/css/site.css?v={{ version }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="/"><img src="/static/img/icon.svg" alt="" width="30" height="30"><span>Universidades em Foco</span></a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Principal">
+        {% for href, name, key in [("/", "Início", "home"), ("/explorar/", "Explorar", "explore"), ("/analises/", "Análises", "analysis"), ("/universidades/", "Universidades", "universities"), ("/criterios/", "Critérios", "criteria"), ("/sobre/", "Sobre", "about")] %}
+        <a href="{{ href }}"{% if page == key %} aria-current="page"{% endif %}>{{ name }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+  </header>
+  <main class="container" id="conteudo">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div class="container">
+      <span>Universidades em Foco · {{ stats.articles | count }} notícias de {{ stats.universities | length }} universidades brasileiras</span>
+      <span>Conteúdo pertencente aos respectivos portais de origem.</span>
+    </div>
+  </footer>
+  <script src="/static/js/site.js?v={{ version }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "macros.html" import section_head %}
+{% block title %}Critérios de classificação · Universidades em Foco{% endblock %}
+{% block description %}Como cada notícia é classificada: campos, categorias possíveis e o que cada uma significa.{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <div class="eyebrow">Metodologia</div>
+  <h1 class="page-title">Critérios de classificação</h1>
+  <p>Cada notícia é lida por um modelo de linguagem que preenche os campos abaixo, escolhendo apenas entre as categorias listadas. Esta página explica o que cada campo pergunta e o que cada categoria significa.</p>
+</section>
+
+<nav class="chips" aria-label="Campos">
+  {% for criterion in criteria %}<a class="chip" href="#{{ criterion.key }}" style="text-decoration:none">{{ criterion.title }}</a>{% endfor %}
+  {% for scale in scales %}<a class="chip" href="#{{ scale.key }}" style="text-decoration:none">{{ scale.title }}</a>{% endfor %}
+  <a class="chip" href="#sdgs" style="text-decoration:none">ODS</a>
+</nav>
+
+{% for criterion in criteria %}
+<section class="criterion" id="{{ criterion.key }}">
+  {{ section_head(criterion.title, "várias categorias por notícia" if criterion.multiple else "uma categoria por notícia") }}
+  <p class="criterion-question">{{ criterion.question }}</p>
+  <dl class="definition-list">
+    {% for option in criterion.options %}
+    <div><dt>{{ option.label }}</dt><dd>{{ option.definition }}</dd></div>
+    {% endfor %}
+  </dl>
+</section>
+{% endfor %}
+
+{% for scale in scales %}
+<section class="criterion" id="{{ scale.key }}">
+  {{ section_head(scale.title, "escala de 0 a 4") }}
+  <p class="criterion-question">{{ scale.question }}</p>
+  <dl class="definition-list">
+    {% for level in scale.levels %}<div><dt>{{ loop.index0 }}</dt><dd>{{ level }}</dd></div>{% endfor %}
+  </dl>
+</section>
+{% endfor %}
+
+<section class="criterion" id="sdgs">
+  {{ section_head("Objetivos de Desenvolvimento Sustentável (ODS)", "zero ou mais por notícia") }}
+  <p class="criterion-question">A quais dos 17 ODS da ONU a notícia está diretamente relacionada?</p>
+  <dl class="definition-list">
+    {% for number, name in sdgs %}<div><dt>ODS {{ number }}</dt><dd>{{ name }}</dd></div>{% endfor %}
+  </dl>
+</section>
+
+{{ section_head("Outros campos") }}
+<dl class="definition-list">
+  <div><dt>Resumo</dt><dd>Uma frase e um parágrafo que resumem a notícia.</dd></div>
+  <div><dt>Tema principal e palavras-chave</dt><dd>Texto livre. As palavras-chave são unificadas no site: grafias que diferem só por maiúsculas, acentos, pontuação ou plural viram uma só, e a sigla da própria universidade é removida.</dd></div>
+  <div><dt>Pessoas e instituições</dt><dd>Nome, tipo, papel na notícia e afiliação de quem é citado.</dd></div>
+  <div><dt>Pesquisa</dt><dd>Se há pesquisa, o estágio, os principais achados, as agências de fomento e os tipos de colaboração.</dd></div>
+  <div><dt>Qualidade</dt><dd>Se a análise foi completa ou parcial e se o modelo sinalizou que a notícia precisa de revisão humana.</dd></div>
+</dl>
+<p class="chart-note" style="margin-top:1rem">Os campos são gerados automaticamente e podem conter erros. Cada anotação registra o modelo, o prompt e a configuração usados; veja a proveniência em <a href="/analises/">Análises</a> e em cada notícia.</p>
+{% endblock %}
