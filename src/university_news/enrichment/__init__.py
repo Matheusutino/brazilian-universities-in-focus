@@ -1,6 +1,6 @@
 """LLM-backed metadata enrichment for university news."""
 
-from .client import ClippingEnricher, EnrichmentSettings, OpenWebUISettings
+from .client import ClippingEnricher, EnrichmentSettings
 from .schema import ClippingSchema, ClippingValidationError
 
 __all__ = [
@@ -8,5 +8,4 @@ __all__ = [
     "ClippingSchema",
     "ClippingValidationError",
     "EnrichmentSettings",
-    "OpenWebUISettings",
 ]

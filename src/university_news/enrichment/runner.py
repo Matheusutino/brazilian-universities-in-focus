@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from ..paths import (
     sites_directory,
 )
 from ..pipeline.preprocessing import PREPROCESSED_ARTICLES_FILENAME
+from ..settings import PROJECT_ROOT, config_section
 from ..shared.io import append_jsonl, atomic_write_json
 from .client import (
     ClippingEnricher,
@@ -28,8 +31,7 @@ from .client import (
     article_id,
 )
 from .schema import DEFAULT_SCHEMA_PATH, ClippingSchema
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from .workload import enrichment_workload
 
 
 @dataclass(slots=True)
@@ -48,9 +50,28 @@ class EnrichmentStats:
     total_tokens: int = 0
     articles_with_token_usage: int = 0
     articles_with_complete_token_usage: int = 0
+    workload: dict[str, int | float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentTask:
+    article: dict[str, Any]
+    university: str
+    signature: tuple[str, str, str, str, str, str]
+    number: int
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentOutcome:
+    task: EnrichmentTask
+    result: dict[str, Any] | None
+    error: Exception | None
+    duration_seconds: float
+    metrics: dict[str, Any] | None
 
 
 def build_parser() -> argparse.ArgumentParser:
+    enrichment = config_section("enrichment")
     parser = argparse.ArgumentParser(
         prog="university-news-enrich",
         description="Enrich preprocessed university news through an LLM provider.",
@@ -76,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--errors-output", type=Path, help="Errors JSONL destination")
     parser.add_argument("--limit", type=int, help="Maximum new articles to request")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(enrichment.get("workers", 1)),
+        help="Maximum simultaneous LLM requests",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Request enrichment even when the same version already exists",
@@ -92,8 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--calls",
         type=int,
-        choices=range(1, 6),
-        metavar="1..5",
+        choices=range(1, 3),
+        metavar="1..2",
         help="Model calls used to fill one complete clipping JSON",
     )
     parser.add_argument(
@@ -156,9 +183,12 @@ def enrich_articles(
     manifest_path: Path,
     limit: int | None = None,
     force: bool = False,
+    workers: int = 1,
 ) -> EnrichmentStats:
     if limit is not None and limit < 1:
         raise ValueError("--limit must be at least 1")
+    if workers < 1:
+        raise ValueError("--workers must be at least 1")
     missing = [str(path) for path in files if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Preprocessed article files not found: {', '.join(missing)}")
@@ -168,93 +198,115 @@ def enrich_articles(
     started_at = datetime.now(UTC).isoformat()
     run_started = time.perf_counter()
     progress = tqdm(desc="Enriching", unit="articles", total=limit)
-    try:
-        for path in files:
-            university = path.parent.name.upper()
-            for article in _iter_jsonl(path):
-                stats.scanned += 1
-                try:
-                    signature = (
-                        article_id(article),
-                        article_content_hash(article),
-                        enricher.schema.version,
-                        enricher.settings.model,
-                        enricher.strategy,
-                        enricher.settings.provider,
-                    )
-                except ValueError as exc:
-                    _record_error(
-                        errors_path,
-                        article,
-                        university,
-                        exc,
-                        provider=enricher.settings.provider,
-                        model=enricher.settings.model,
-                    )
-                    stats.errors += 1
-                    continue
-                if signature in known:
-                    stats.skipped += 1
-                    continue
-                if limit is not None and stats.selected >= limit:
-                    break
+    progress_lock = threading.Lock()
+    scheduled = set(known)
+    pending: set[Future[EnrichmentOutcome]] = set()
 
-                stats.selected += 1
-                article_started = time.perf_counter()
-
-                def show_request(
-                    call: int,
-                    total: int,
-                    attempt: int,
-                    *,
-                    university_name: str = university,
-                    article_number: int = stats.selected,
-                ) -> None:
-                    progress.set_description(
-                        f"{university_name} {article_number}: "
-                        f"call {call}/{total}, attempt {attempt}"
-                    )
-                    progress.refresh()
-
-                try:
-                    result = enricher.enrich(
-                        article,
-                        university=university,
-                        on_request_start=show_request,
-                    )
-                # Each record is an independent remote job. Persist any SDK,
-                # parsing, or validation failure and continue the batch.
-                except Exception as exc:  # noqa: BLE001
-                    error_metrics = getattr(exc, "generation_metrics", None)
-                    _record_error(
-                        errors_path,
-                        article,
-                        university,
-                        exc,
-                        provider=enricher.settings.provider,
-                        model=enricher.settings.model,
-                        duration_seconds=time.perf_counter() - article_started,
-                        generation_metrics=error_metrics,
-                    )
-                    stats.errors += 1
-                    _accumulate_metrics(stats, error_metrics)
-                else:
-                    append_jsonl(output_path, [result])
-                    known.add(signature)
-                    stats.enriched += 1
-                    _accumulate_metrics(stats, result.get("generation_metrics"))
+    def consume(completed: set[Future[EnrichmentOutcome]]) -> None:
+        for future in completed:
+            outcome = future.result()
+            task = outcome.task
+            if outcome.error is not None:
+                _record_error(
+                    errors_path,
+                    task.article,
+                    task.university,
+                    outcome.error,
+                    provider=enricher.settings.provider,
+                    model=enricher.settings.model,
+                    duration_seconds=outcome.duration_seconds,
+                    generation_metrics=outcome.metrics,
+                )
+                stats.errors += 1
+                _accumulate_metrics(stats, outcome.metrics)
+            else:
+                assert outcome.result is not None
+                append_jsonl(output_path, [outcome.result])
+                known.add(task.signature)
+                stats.enriched += 1
+                _accumulate_metrics(
+                    stats, outcome.result.get("generation_metrics")
+                )
+            with progress_lock:
                 progress.update(1)
                 progress.set_postfix(
                     enriched=stats.enriched,
                     errors=stats.errors,
                     skipped=stats.skipped,
                 )
-            if limit is not None and stats.selected >= limit:
-                break
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            reached_limit = False
+            for path in files:
+                university = path.parent.name.upper()
+                for article in _iter_jsonl(path):
+                    stats.scanned += 1
+                    try:
+                        signature = (
+                            article_id(article),
+                            article_content_hash(article),
+                            enricher.schema.version,
+                            enricher.settings.model,
+                            enricher.strategy,
+                            enricher.settings.provider,
+                        )
+                    except ValueError as exc:
+                        _record_error(
+                            errors_path,
+                            article,
+                            university,
+                            exc,
+                            provider=enricher.settings.provider,
+                            model=enricher.settings.model,
+                        )
+                        stats.errors += 1
+                        continue
+                    if signature in scheduled:
+                        stats.skipped += 1
+                        continue
+                    if limit is not None and stats.selected >= limit:
+                        reached_limit = True
+                        break
+
+                    stats.selected += 1
+                    scheduled.add(signature)
+                    task = EnrichmentTask(
+                        article=article,
+                        university=university,
+                        signature=signature,
+                        number=stats.selected,
+                    )
+                    pending.add(
+                        executor.submit(
+                            _execute_enrichment,
+                            enricher,
+                            task,
+                            progress,
+                            progress_lock,
+                        )
+                    )
+                    if len(pending) >= workers:
+                        completed, pending = wait(
+                            pending, return_when=FIRST_COMPLETED
+                        )
+                        consume(completed)
+                if reached_limit:
+                    break
+            while pending:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                consume(completed)
     finally:
         progress.close()
 
     stats.duration_seconds = round(time.perf_counter() - run_started, 3)
+    stats.workload = enrichment_workload(
+        stats.selected,
+        workers=workers,
+        calls_per_article=enricher.settings.enrichment_calls,
+        validation_attempts=enricher.settings.validation_attempts,
+        transport_retries=enricher.settings.max_retries,
+    ).as_dict()
 
     atomic_write_json(
         manifest_path,
@@ -272,10 +324,51 @@ def enrich_articles(
             "sources": [str(path) for path in files],
             "force": force,
             "limit": limit,
+            "workers": workers,
             "stats": asdict(stats),
         },
     )
     return stats
+
+
+def _execute_enrichment(
+    enricher: ClippingEnricher,
+    task: EnrichmentTask,
+    progress: tqdm,
+    progress_lock: threading.Lock,
+) -> EnrichmentOutcome:
+    started = time.perf_counter()
+
+    def show_request(call: int, total: int, attempt: int) -> None:
+        with progress_lock:
+            progress.set_description(
+                f"{task.university} {task.number}: "
+                f"call {call}/{total}, attempt {attempt}"
+            )
+            progress.refresh()
+
+    try:
+        result = enricher.enrich(
+            task.article,
+            university=task.university,
+            on_request_start=show_request,
+        )
+    except Exception as exc:  # noqa: BLE001
+        metrics = getattr(exc, "generation_metrics", None)
+        return EnrichmentOutcome(
+            task=task,
+            result=None,
+            error=exc,
+            duration_seconds=time.perf_counter() - started,
+            metrics=metrics if isinstance(metrics, dict) else None,
+        )
+    return EnrichmentOutcome(
+        task=task,
+        result=result,
+        error=None,
+        duration_seconds=time.perf_counter() - started,
+        metrics=result.get("generation_metrics"),
+    )
 
 
 def _record_error(
@@ -356,7 +449,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             }.items()
             if value is not None
         }
-        settings = EnrichmentSettings.from_env(**overrides)
+        settings = EnrichmentSettings.from_config(**overrides)
         enricher = ClippingEnricher(settings, schema)
         files = source_files(args.data_root, args.sites)
         if not files:
@@ -373,6 +466,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             manifest_path=directory / "manifest.json",
             limit=args.limit,
             force=args.force,
+            workers=args.workers,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Enrichment failed: {exc}")

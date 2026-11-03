@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,17 +10,18 @@ import pytest
 from university_news.enrichment.client import (
     ClippingEnricher,
     EnrichmentSettings,
-    OpenWebUISettings,
+    api_keys_from_env,
     normalize_nvidia_nim_url,
     normalize_openwebui_url,
     parse_json_object,
     section_groups,
 )
+from university_news.enrichment.rate_limit import PacedPool
 from university_news.enrichment.runner import enrich_articles
 from university_news.enrichment.schema import (
+    CODE_FILLED_SECTIONS,
     ClippingSchema,
     ClippingValidationError,
-    normalize_evidence_locations,
 )
 
 
@@ -35,8 +38,6 @@ def materialize(value, field_name=""):
             return variants[0]
         if value == "YYYY-MM-DD":
             return "2026-08-07"
-        if value in {"ISO-8601", "ISO-8601 datetime"}:
-            return "2026-08-07T12:00:00+00:00"
         if value == "string":
             return "Example"
     return value
@@ -56,7 +57,10 @@ class FakeCompletions:
             total_tokens=150,
         )
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=message)],
+            id=f"cmpl_{len(self.requests)}",
+            model="served/model",
+            provider="UpstreamCloud",
+            choices=[SimpleNamespace(message=message, finish_reason="stop")],
             usage=usage,
             _request_id=f"req_{len(self.requests)}",
         )
@@ -99,15 +103,15 @@ def valid_response(clipping_schema):
     return materialize(deepcopy(clipping_schema.template))
 
 
-def settings(**overrides) -> OpenWebUISettings:
+def settings(**overrides) -> EnrichmentSettings:
     values = {
         "url": "https://agents4gov.icmc.usp.br/",
-        "api_key": "test-key",
+        "api_keys": ("test-key",),
         "max_input_chars": 1_000,
         "enrichment_calls": 1,
     }
     values.update(overrides)
-    return OpenWebUISettings(**values)
+    return EnrichmentSettings(**values)
 
 
 def article():
@@ -124,10 +128,7 @@ def article():
 
 def single_call_fragment(response):
     sections = section_groups(1)[0]
-    return {
-        key: deepcopy(response[key])
-        for key in ("processing", *sections, "evidence", "quality_control")
-    }
+    return {key: deepcopy(response[key]) for key in (*sections, "quality")}
 
 
 def test_openwebui_url_maps_to_api_chat_completions() -> None:
@@ -151,32 +152,36 @@ def test_nvidia_nim_url_maps_to_v1_chat_completions() -> None:
 
 
 def test_settings_require_url_and_key(monkeypatch) -> None:
-    monkeypatch.delenv("ENRICHMENT_PROVIDER", raising=False)
-    monkeypatch.delenv("OPENWEBUI_URL", raising=False)
     monkeypatch.delenv("OPENWEBUI_API_KEY", raising=False)
+    config = {
+        "provider": "openwebui",
+        "openwebui": {"url": "", "model": "test-model"},
+    }
 
-    with pytest.raises(ValueError, match="OPENWEBUI_URL"):
-        OpenWebUISettings.from_env()
+    with pytest.raises(ValueError, match="enrichment.openwebui.url"):
+        EnrichmentSettings.from_config(config=config)
 
-    monkeypatch.setenv("OPENWEBUI_URL", "https://example.test")
+    config["openwebui"]["url"] = "https://example.test"
     with pytest.raises(ValueError, match="OPENWEBUI_API_KEY"):
-        OpenWebUISettings.from_env()
+        EnrichmentSettings.from_config(config=config)
 
 
 def test_nvidia_nim_settings_default_to_one_long_context_call(monkeypatch) -> None:
-    monkeypatch.setenv("ENRICHMENT_PROVIDER", "nvidia_nim")
     monkeypatch.setenv("NVIDIA_API_KEY", "nim-test-key")
     monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
-    monkeypatch.setenv("NVIDIA_NIM_MODEL", "meta/long-context-model")
-    for name in (
-        "NVIDIA_NIM_URL",
-        "NVIDIA_NIM_ENRICHMENT_CALLS",
-        "NVIDIA_NIM_MAX_INPUT_CHARS",
-        "NVIDIA_NIM_MAX_OUTPUT_TOKENS",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-    configured = EnrichmentSettings.from_env()
+    configured = EnrichmentSettings.from_config(
+        config={
+            "provider": "nvidia_nim",
+            "nvidia_nim": {
+                "url": "https://integrate.api.nvidia.com/v1",
+                "model": "meta/long-context-model",
+                "calls": 1,
+                "max_input_chars": 120_000,
+                "max_output_tokens": 16_384,
+                "disable_thinking": True,
+            },
+        }
+    )
 
     assert configured.provider == "nvidia_nim"
     assert configured.base_url == "https://integrate.api.nvidia.com/v1/"
@@ -193,49 +198,48 @@ def test_parse_json_object_accepts_markdown_fence() -> None:
 def test_schema_rejects_unknown_classification(
     clipping_schema, valid_response
 ) -> None:
-    valid_response["classification"]["institutional_axes"][0]["label"] = "invalid"
+    valid_response["classification"]["institutional_axes"] = ["invalid"]
 
     with pytest.raises(ClippingValidationError, match="institutional_axes"):
         clipping_schema.validate(valid_response)
 
 
-def test_schema_accepts_any_positive_paragraph_location(
-    clipping_schema, valid_response
-) -> None:
-    valid_response["evidence"][0]["location"] = "paragraph_12"
-
-    validated = clipping_schema.validate(valid_response)
-
-    assert validated["evidence"][0]["location"] == "paragraph_12"
-
-
 @pytest.mark.parametrize(
-    "source_location",
-    ["document", "publication_date", "tags_from_source", "url"],
+    ("path", "value"),
+    [
+        (("communication", "accessibility_0_4"), 5),
+        (("societal_impact", "sdgs"), [18]),
+        (("context", "event_date"), "07/08/2026"),
+    ],
 )
-def test_unknown_evidence_location_is_normalized_to_other(
-    source_location, valid_response
+def test_schema_rejects_out_of_range_values(
+    clipping_schema, valid_response, path, value
 ) -> None:
-    valid_response["evidence"][0]["location"] = source_location
+    section, field = path
+    valid_response[section][field] = value
 
-    normalized = normalize_evidence_locations(valid_response)
+    with pytest.raises(ClippingValidationError, match=field):
+        clipping_schema.validate(valid_response)
 
-    assert normalized["evidence"][0]["location"] == "other"
+
+def test_section_groups_cover_every_model_section_once(clipping_schema) -> None:
+    for calls in (1, 2):
+        sections = [section for group in section_groups(calls) for section in group]
+        assert sorted(sections) == sorted(clipping_schema.model_sections)
 
 
-def test_location_normalization_avoids_an_llm_correction(
+def test_model_contract_excludes_code_filled_metadata(
     clipping_schema, valid_response
 ) -> None:
-    fragment = single_call_fragment(valid_response)
-    fragment["evidence"][0]["location"] = "tags_from_source"
-    fake = FakeClient(fragment)
+    fake = FakeClient(single_call_fragment(valid_response))
     enricher = ClippingEnricher(settings(), clipping_schema, client=fake)
 
-    result = enricher.enrich(article(), university="usp")
+    enricher.enrich(article(), university="usp")
 
-    assert len(fake.completions.requests) == 1
-    assert result["analysis"]["evidence"][0]["location"] == "other"
-    assert result["generation_metrics"]["validation_retries"] == 0
+    system_prompt = fake.completions.requests[0]["messages"][0]["content"]
+    contract = json.loads(system_prompt.split("Contrato do fragmento:\n", 1)[1])
+    assert not set(CODE_FILLED_SECTIONS) & set(contract)
+    assert "quality" in contract
 
 
 def test_enricher_uses_chat_completions_and_preserves_source_metadata(
@@ -252,8 +256,9 @@ def test_enricher_uses_chat_completions_and_preserves_source_metadata(
     assert document["url"] == article()["url"]
     assert document["source_university"] == "USP"
     assert document["title"] == article()["title"]
-    assert document["language"] == "pt-BR"
-    assert result["schema_version"] == "1.0.0"
+    assert document["publication_date"] == "2026-08-07"
+    assert result["schema_version"] == "2.1.0"
+    assert result["analysis"]["schema_version"] == "2.1.0"
     assert result["provider"] == "openwebui"
     request = fake.completions.requests[0]
     assert request["model"] == "externo.revejo-qwen3.6-35b-a3b"
@@ -278,7 +283,7 @@ def test_nvidia_nim_request_uses_configured_output_limit(
     configured = EnrichmentSettings(
         provider="nvidia_nim",
         url="https://integrate.api.nvidia.com/v1",
-        api_key="nim-test-key",
+        api_keys=("nim-test-key",),
         model="meta/long-context-model",
         enrichment_calls=1,
         max_input_chars=120_000,
@@ -301,7 +306,7 @@ def test_enricher_requests_one_correction_after_invalid_output(
 ) -> None:
     valid_fragment = single_call_fragment(valid_response)
     invalid = deepcopy(valid_fragment)
-    invalid["classification"]["institutional_axes"][0]["label"] = "invalid"
+    invalid["classification"]["institutional_axes"] = ["invalid"]
     completions = SequencedCompletions([invalid, valid_fragment])
     fake = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     enricher = ClippingEnricher(
@@ -331,36 +336,35 @@ def test_enricher_requests_one_correction_after_invalid_output(
     assert call["attempt_metrics"][1]["valid"] is True
 
 
-def test_enricher_merges_three_calls_into_the_complete_schema(
+def test_enricher_merges_two_calls_into_the_complete_schema(
     clipping_schema, valid_response
 ) -> None:
-    responses = []
-    for sections in section_groups(3):
-        responses.append(
-            {
-                key: deepcopy(valid_response[key])
-                for key in ("processing", *sections, "evidence", "quality_control")
-            }
-        )
+    responses = [
+        {key: deepcopy(valid_response[key]) for key in (*sections, "quality")}
+        for sections in section_groups(2)
+    ]
+    responses[1]["quality"] = {
+        "analysis_status": "partial",
+        "requires_human_review": True,
+    }
     completions = SequencedCompletions(responses)
     fake = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     enricher = ClippingEnricher(
-        settings(enrichment_calls=3), clipping_schema, client=fake
+        settings(enrichment_calls=2), clipping_schema, client=fake
     )
 
     result = enricher.enrich(article(), university="usp")
 
-    assert len(completions.requests) == 3
-    assert result["llm_calls"] == 3
-    assert result["strategy"] == "full-schema-multicall-v1:3"
-    assert result["generation_metrics"]["api_requests"] == 3
-    assert result["generation_metrics"]["total_tokens"] == 450
-    assert len(result["generation_metrics"]["call_metrics"]) == 3
+    assert len(completions.requests) == 2
+    assert result["llm_calls"] == 2
+    assert result["strategy"] == "sections-v2:2"
+    assert result["generation_metrics"]["api_requests"] == 2
+    assert result["generation_metrics"]["total_tokens"] == 300
     assert set(result["analysis"]) == set(clipping_schema.template)
-    evidence_ids = [
-        item["evidence_id"] for item in result["analysis"]["evidence"]
-    ]
-    assert evidence_ids == ["E1_1", "E2_1", "E3_1"]
+    assert result["analysis"]["quality"] == {
+        "analysis_status": "partial",
+        "requires_human_review": True,
+    }
     assert "known_entities" in json.loads(
         completions.requests[1]["messages"][1]["content"]
     )
@@ -430,6 +434,53 @@ def test_enrichment_is_resumable_by_content_schema_and_model(
     assert first_manifest["stats"]["duration_seconds"] >= 0
 
 
+def test_enrichment_workers_bound_simultaneous_requests(
+    tmp_path: Path, clipping_schema, valid_response
+) -> None:
+    class TrackingCompletions(FakeCompletions):
+        def __init__(self, response):
+            super().__init__(response)
+            self.active = 0
+            self.maximum_active = 0
+            self.lock = threading.Lock()
+
+        def create(self, **kwargs):
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            try:
+                time.sleep(0.03)
+                return super().create(**kwargs)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    source = tmp_path / "sites" / "usp" / "articles.preprocessed.jsonl"
+    source.parent.mkdir(parents=True)
+    records = [article() | {"url": f"https://example.edu/news/{number}"} for number in range(4)]
+    source.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    completions = TrackingCompletions(single_call_fragment(valid_response))
+    fake = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    enricher = ClippingEnricher(settings(), clipping_schema, client=fake)
+
+    stats = enrich_articles(
+        [source],
+        enricher=enricher,
+        output_path=tmp_path / "annotations.jsonl",
+        errors_path=tmp_path / "errors.jsonl",
+        manifest_path=tmp_path / "manifest.json",
+        workers=2,
+    )
+
+    assert stats.enriched == 4
+    assert completions.maximum_active == 2
+    assert stats.workload["minimum_llm_calls"] == 4
+    assert stats.workload["maximum_concurrent_requests"] == 2
+
+
 def test_failed_validation_persists_spent_request_metrics(
     tmp_path: Path, clipping_schema, valid_response
 ) -> None:
@@ -437,7 +488,7 @@ def test_failed_validation_persists_spent_request_metrics(
     source.parent.mkdir(parents=True)
     source.write_text(json.dumps(article()) + "\n", encoding="utf-8")
     invalid = single_call_fragment(valid_response)
-    invalid["classification"]["institutional_axes"][0]["label"] = "invalid"
+    invalid["classification"]["institutional_axes"] = ["invalid"]
     fake = FakeClient(invalid)
     enricher = ClippingEnricher(
         settings(validation_attempts=1), clipping_schema, client=fake
@@ -462,3 +513,145 @@ def test_failed_validation_persists_spent_request_metrics(
     assert metrics["api_requests"] == 1
     assert metrics["total_tokens"] == 150
     assert metrics["call_metrics"][0]["attempt_metrics"][0]["valid"] is False
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_paced_pool_spaces_requests_to_the_per_key_limit() -> None:
+    clock = FakeClock()
+    pool = PacedPool(["only-key"], 60, clock=clock, sleep=clock.sleep)
+
+    waits = [pool.acquire()[2] for _ in range(3)]
+
+    assert waits == [0.0, 1.0, 1.0]
+    assert clock.now == 2.0
+
+
+def test_paced_pool_rotates_keys_before_waiting() -> None:
+    clock = FakeClock()
+    pool = PacedPool(["first", "second"], 30, clock=clock, sleep=clock.sleep)
+
+    acquired = [pool.acquire() for _ in range(3)]
+
+    assert [client for _index, client, _wait in acquired] == ["first", "second", "first"]
+    assert [wait for _index, _client, wait in acquired] == [0.0, 0.0, 2.0]
+
+
+def test_api_keys_prefer_comma_separated_list(monkeypatch) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEYS", "key-a, key-b,")
+    monkeypatch.setenv("NVIDIA_API_KEY", "single")
+
+    assert api_keys_from_env("nvidia_nim") == ("key-a", "key-b")
+
+    monkeypatch.delenv("NVIDIA_API_KEYS")
+    assert api_keys_from_env("nvidia_nim") == ("single",)
+
+
+def test_settings_reject_duplicate_keys() -> None:
+    with pytest.raises(ValueError, match="distinct"):
+        settings(api_keys=("same", "same"))
+
+
+def test_profile_is_stable_and_changes_with_generation_settings(clipping_schema) -> None:
+    first = ClippingEnricher(settings(), clipping_schema, client=FakeClient({}))
+    same = ClippingEnricher(settings(), clipping_schema, client=FakeClient({}))
+    warmer = ClippingEnricher(
+        settings(temperature=0.7), clipping_schema, client=FakeClient({})
+    )
+
+    assert first.profile == same.profile
+    assert first.profile.id.startswith("externo-revejo-qwen3-6-35b-a3b-v2.1.0-")
+    assert warmer.profile.id != first.profile.id
+    assert warmer.profile.prompt_sha256 == first.profile.prompt_sha256
+
+
+def test_attempt_metrics_record_key_and_pacing(clipping_schema, valid_response) -> None:
+    fake = FakeClient(single_call_fragment(valid_response))
+    enricher = ClippingEnricher(settings(), clipping_schema, client=fake)
+
+    metrics = enricher.enrich(article(), university="usp")["generation_metrics"]
+
+    attempt = metrics["call_metrics"][0]["attempt_metrics"][0]
+    assert attempt["api_key_index"] == 0
+    assert attempt["rate_limit_wait_seconds"] == 0.0
+    assert metrics["rate_limit_wait_seconds"] == 0.0
+
+
+def test_rate_limited_requests_wait_and_retry_without_a_correction(
+    clipping_schema, valid_response
+) -> None:
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class FlakyCompletions(FakeCompletions):
+        def __init__(self, response):
+            super().__init__(response)
+            self.rejections = 2
+
+        def create(self, **kwargs):
+            if self.rejections:
+                self.rejections -= 1
+                self.requests.append(kwargs)
+                raise RateLimitError("Too Many Requests")
+            return super().create(**kwargs)
+
+    completions = FlakyCompletions(single_call_fragment(valid_response))
+    fake = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    enricher = ClippingEnricher(settings(), clipping_schema, client=fake)
+    clock = FakeClock()
+    enricher.clients = PacedPool([fake], None, clock=clock, sleep=clock.sleep)
+
+    metrics = enricher.enrich(article(), university="usp")["generation_metrics"]
+
+    assert len(completions.requests) == 3
+    assert metrics["rate_limited_requests"] == 2
+    assert metrics["validation_retries"] == 0
+    assert clock.sleeps == [20.0, 20.0]
+
+
+def test_penalized_key_is_skipped_while_another_is_free() -> None:
+    clock = FakeClock()
+    pool = PacedPool(["first", "second"], None, clock=clock, sleep=clock.sleep)
+
+    pool.penalize(0, 30)
+
+    assert pool.acquire()[1] == "second"
+
+
+def test_metrics_record_what_actually_answered(clipping_schema, valid_response) -> None:
+    fake = FakeClient(single_call_fragment(valid_response))
+    enricher = ClippingEnricher(settings(), clipping_schema, client=fake)
+
+    metrics = enricher.enrich(article(), university="usp")["generation_metrics"]
+
+    attempt = metrics["call_metrics"][0]["attempt_metrics"][0]
+    assert attempt["response_id"] == "cmpl_1"
+    assert attempt["finish_reason"] == "stop"
+    assert metrics["response_models"] == ["served/model"]
+    assert metrics["upstream_providers"] == ["UpstreamCloud"]
+
+
+def test_profile_carries_prompts_and_contract(clipping_schema) -> None:
+    profile = ClippingEnricher(settings(), clipping_schema, client=FakeClient({})).profile
+
+    assert len(profile.prompts) == 1
+    assert "Contrato do fragmento" in profile.prompts[0]
+    assert profile.contract == clipping_schema.template
+    assert profile.as_dict()["prompts"] == list(profile.prompts)
+
+
+def test_model_info_never_raises(clipping_schema) -> None:
+    enricher = ClippingEnricher(settings(), clipping_schema, client=FakeClient({}))
+
+    assert "error" in enricher.model_info()
