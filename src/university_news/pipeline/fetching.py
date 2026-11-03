@@ -8,7 +8,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_random_exponential
 
-from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status
+from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status, tls_context
 from ..shared.io import atomic_write_bytes
 from ..sources.catalog import SiteConfig
 
@@ -59,6 +59,7 @@ class ContentFetcher:
         )
         headers = {"User-Agent": self.site.user_agent, "Accept": "text/html,*/*"}
         async with httpx.AsyncClient(
+            verify=tls_context(),
             headers=headers,
             follow_redirects=True,
             timeout=self.timeout,

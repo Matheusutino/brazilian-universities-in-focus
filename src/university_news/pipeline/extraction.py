@@ -248,7 +248,10 @@ class StructuredExtractor:
             if author is not None:
                 value = author.get_text(" ", strip=True)
                 value = re.sub(
-                    r"^(?:por|texto)\s*:?\s*", "", value, flags=re.IGNORECASE
+                    r"^(?:escrito\s+por|por|texto)\s*:?\s*",
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
                 )
                 article["author"] = self._optional_string(value)
 

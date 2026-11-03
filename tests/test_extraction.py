@@ -5,6 +5,7 @@ from university_news.sources.catalog import (
     UFMS,
     UFPA,
     UFRGS,
+    UFC,
     UFT,
     UNB,
     UNESP,
@@ -292,6 +293,58 @@ def test_uft_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> Non
     assert article["author"] == "Maria Silva"
     assert article["date"] == "2026-07-02"
     assert article["tags"] == ["Pesquisa", "UFT"]
+
+
+def test_ufc_informa_metadata_is_enriched_from_stable_html(
+    tmp_path, monkeypatch
+) -> None:
+    url = "https://ufcinforma.ufc.br/pt/noticias/materia"
+    raw_path = tmp_path / "article.html"
+    raw_path.write_text(
+        """<main id="content"><div class="container">
+          <div class="mb-4">
+            <h2>Título UFC Informa</h2>
+            <p class="mt-4">Subtítulo da matéria</p>
+          </div>
+          <div class="flex flex-col md:flex-row">
+            <div class="text-sm flex flex-col">
+              <div>Quinta, 29 outubro 2026 13:30</div>
+              <div class="font-semibold">Escrito por Secom UFC</div>
+            </div>
+          </div>
+          <div id="page"><p>Corpo editorial</p>
+            <ul><li><a href="/pt/marcador/noticias">Notícias</a></li>
+              <li><a href="/pt/marcador/pesquisa">Pesquisa</a></li></ul>
+          </div>
+        </div></main>""",
+        encoding="utf-8",
+    )
+
+    def fake_trafilatura(*args, **kwargs):
+        if kwargs["output_format"] == "json":
+            return json.dumps(
+                {
+                    "title": None,
+                    "author": None,
+                    "date": None,
+                    "text": "x" * 300,
+                }
+            )
+        return "<doc><main><p>Corpo editorial</p></main></doc>"
+
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
+    article = StructuredExtractor(
+        tmp_path,
+        tmp_path / "articles.jsonl",
+        mode="trafilatura",
+        site=UFC,
+    ).extract_file(raw_path, url)
+
+    assert article["title"] == "Título UFC Informa"
+    assert article["subtitle"] == "Subtítulo da matéria"
+    assert article["author"] == "Secom UFC"
+    assert article["date"] == "2026-10-29"
+    assert article["tags"] == ["Notícias", "Pesquisa"]
 
 
 def test_unesp_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:
