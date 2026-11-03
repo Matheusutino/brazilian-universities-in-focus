@@ -1,0 +1,96 @@
+[enrichment]
+# Default provider for commands that use one; see providers for the workers.
+provider = "openwebui"
+# One worker process per provider shares the enrich queue: each article is
+# annotated once, by whichever provider claims it first. Only DeepSeek V3 runs
+# now; add "nvidia_nim" back to split the queue with Nemotron.
+providers = ["openwebui"]
+workers = 16
+# Used only until measured runtimes exist in PostgreSQL.
+fallback_seconds_per_call = 20.0
+
+[enrichment.openwebui]
+url = "https://agents4gov.icmc.usp.br/"
+# Non-reasoning model. disable_thinking only sends Qwen's /no_think prefix.
+model = "deepseek/deepseek-chat-v3-0324"
+temperature = 0.2
+timeout_seconds = 300
+max_retries = 3
+validation_attempts = 2
+calls = 1
+max_input_chars = 24000
+disable_thinking = false
+json_mode = true
+# Concurrent requests for this provider's worker process.
+workers = 8
+
+[enrichment.nvidia_nim]
+url = "https://integrate.api.nvidia.com/v1"
+model = "nvidia/nemotron-3-ultra-550b-a55b"
+temperature = 0.2
+timeout_seconds = 300
+max_retries = 3
+validation_attempts = 2
+calls = 1
+max_input_chars = 120000
+max_output_tokens = 16384
+disable_thinking = true
+json_mode = true
+# Per API key; keys come from NVIDIA_API_KEYS. The catalog allows 40/min;
+# 36 leaves a margin, and any HTTP 429 also pauses that key.
+requests_per_minute = 36
+# Enough concurrency to use 40 requests/min at ~15-25 s per request.
+workers = 12
+
+[workers]
+core = 4
+embedding = 1
+lease_seconds = 600
+heartbeat_seconds = 60
+max_attempts = 5
+poll_seconds = 5.0
+
+[daily_discovery]
+# Discovery stops after stop_after_empty_pages pages with no new URLs, so a
+# normal day reads only a few pages; the high cap lets a gap (downtime, a site
+# fixed after weeks) be recovered automatically.
+max_pages = 200
+stop_after_empty_pages = 3
+concurrency = 5
+
+[openrouter]
+model = "openai/gpt-4o-mini"
+
+[search]
+mode = "hybrid"
+lancedb_path = "data/indexes/lancedb"
+lancedb_table = "university_articles"
+
+[embedding]
+model_repo = "Qwen/Qwen3-Embedding-0.6B-GGUF"
+model_file = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+# Local copy on /exp; empty downloads model_file from model_repo into the HF cache.
+model_path = "data/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+context_length = 32768
+query_context_length = 1024
+gpu_layers = -1
+threads = 8
+batch_size = 8
+
+[site]
+# Built pages and data bundle (university-news-site build).
+directory = "data/site"
+address = "127.0.0.1"
+port = 8501
+# Query embedding for semantic search: CPU by default, for small servers.
+query_gpu_layers = 0
+query_threads = 2
+# Distinct recent queries whose embeddings are kept in memory.
+query_cache_size = 2048
+
+[runtime]
+log_directory = "data/logs"
+index_log = "lancedb-index-gpu.log"
+index_pid = "lancedb-index-gpu.pid"
+site_log = "site.log"
+site_pid = "site.pid"

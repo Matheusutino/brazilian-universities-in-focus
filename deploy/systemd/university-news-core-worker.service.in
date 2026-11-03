@@ -1,0 +1,15 @@
+[Unit]
+Description=University news fetch, extraction, and preprocessing worker
+After=network-online.target postgresql.service university-news-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStart=__UV__ run university-news-worker --stages fetch extract preprocess
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
