@@ -1,6 +1,6 @@
 """Shared article schema definitions."""
 
-DASHBOARD_ARTICLE_COLUMNS = (
+SITE_ARTICLE_COLUMNS = (
     "url",
     "title",
     "subtitle",

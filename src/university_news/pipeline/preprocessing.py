@@ -18,12 +18,12 @@ from tqdm import tqdm
 
 from ..paths import (
     compiled_articles_path,
-    compiled_dashboard_articles_path,
+    compiled_site_articles_path,
     compiled_manifest_path,
     reports_directory,
     sites_directory,
 )
-from ..shared.articles import DASHBOARD_ARTICLE_COLUMNS
+from ..shared.articles import SITE_ARTICLE_COLUMNS
 from ..shared.io import (
     atomic_write_json,
     atomic_write_json_array,
@@ -38,9 +38,7 @@ MIN_TITLE_WORDS = 3
 MIN_TEXT_WORDS = 10
 PREPROCESSED_ARTICLES_FILENAME = "articles.preprocessed.jsonl"
 REJECTED_ARTICLES_FILENAME = "articles.rejected.jsonl"
-COMPILED_ARTICLES_FILENAME = "articles.json"
 SITE_STATS_FILENAME = "preprocess_stats.json"
-GLOBAL_STATS_FILENAME = "preprocess_stats.json"
 ProgressReporter = Callable[[int, int, int, int], None]
 
 
@@ -84,7 +82,7 @@ class CompileStats:
     articles: int
     duplicate_urls_removed: int
     output: str
-    dashboard_output: str
+    site_output: str
     manifest: str
 
 
@@ -491,7 +489,7 @@ def write_compiled_manifest(
     data_root: Path,
     *,
     output_path: Path,
-    dashboard_output_path: Path,
+    site_output_path: Path,
     articles: int,
     duplicate_urls_by_site: dict[str, int] | None = None,
 ) -> Path:
@@ -524,7 +522,7 @@ def write_compiled_manifest(
     atomic_write_json(
         path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "dataset": {
                 "path": _relative_path(output_path, data_root),
@@ -538,13 +536,13 @@ def write_compiled_manifest(
                     data_root,
                 ),
             },
-            "dashboard_dataset": {
-                "path": _relative_path(dashboard_output_path, data_root),
+            "site_dataset": {
+                "path": _relative_path(site_output_path, data_root),
                 "format": "parquet",
-                "columns": list(DASHBOARD_ARTICLE_COLUMNS),
+                "columns": list(SITE_ARTICLE_COLUMNS),
                 "articles": articles,
-                "bytes": dashboard_output_path.stat().st_size,
-                "sha256": _file_sha256(dashboard_output_path),
+                "bytes": site_output_path.stat().st_size,
+                "sha256": _file_sha256(site_output_path),
             },
             "preprocessing": {
                 "language": "Portuguese",
@@ -627,8 +625,8 @@ def write_compiled_manifest(
     return path
 
 
-def write_dashboard_parquet(source_path: Path, output_path: Path) -> None:
-    """Atomically create the dashboard's compact projection of the corpus."""
+def write_site_parquet(source_path: Path, output_path: Path) -> None:
+    """Atomically create the website's compact projection of the corpus."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{output_path.name}.",
@@ -639,7 +637,7 @@ def write_dashboard_parquet(source_path: Path, output_path: Path) -> None:
     temporary_path.unlink()
     projections = ",\n".join(
         f"json_extract_string(json, '$.{column}') AS {column}"
-        for column in DASHBOARD_ARTICLE_COLUMNS
+        for column in SITE_ARTICLE_COLUMNS
     )
     quoted_output = str(temporary_path).replace("'", "''")
     try:
@@ -690,16 +688,16 @@ def compile_articles(
                 yield record | {"journal": journal}
 
     articles = atomic_write_json_array(output_path, compiled_records())
-    dashboard_output_path = (
-        compiled_dashboard_articles_path(data_root)
+    site_output_path = (
+        compiled_site_articles_path(data_root)
         if output_path == compiled_articles_path(data_root)
-        else output_path.parent / "dashboard_articles.parquet"
+        else output_path.parent / "site_articles.parquet"
     )
-    write_dashboard_parquet(output_path, dashboard_output_path)
+    write_site_parquet(output_path, site_output_path)
     manifest_path = write_compiled_manifest(
         data_root,
         output_path=output_path,
-        dashboard_output_path=dashboard_output_path,
+        site_output_path=site_output_path,
         articles=articles,
         duplicate_urls_by_site=dict(duplicate_urls_by_site),
     )
@@ -709,7 +707,7 @@ def compile_articles(
         articles=articles,
         duplicate_urls_removed=sum(duplicate_urls_by_site.values()),
         output=str(output_path),
-        dashboard_output=str(dashboard_output_path),
+        site_output=str(site_output_path),
         manifest=str(manifest_path),
     )
 

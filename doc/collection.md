@@ -1,0 +1,114 @@
+# Collection
+
+Collection covers three stages: discovery, fetching, and extraction. Each
+university is described once in `src/university_news/sources/catalog.py`.
+
+## University catalog
+
+A `SiteConfig` declares a portal's base URL, listing URL, paginated URL
+template, listing selector, page range, and optional selectors for content,
+title, subtitle, author, date, and tags. `excluded_article_path_prefixes`
+drops sections that are not news, such as opinion columns.
+
+The catalog also maps each university to a Brazilian region (`SITE_REGIONS`).
+Search filters and the website use this mapping.
+
+Current coverage, by region:
+
+| Region | Universities |
+| --- | --- |
+| Norte | UFPA, UFT |
+| Nordeste | UFAL, UFC |
+| Centro-Oeste | UnB, UFMS |
+| Sudeste | USP, UNICAMP, UNESP, UFRJ, UERJ, UFABC, UFMG, UFLA, UNIFESP |
+| Sul | UFRGS, UFPR, UEM, FURG |
+
+To add a university, define a `SiteConfig`, register it in the catalog, add
+its region, and cover any site-specific parsing in `pipeline/site_rules.py`
+with tests.
+
+## Running
+
+```bash
+# One university, every stage
+uv run university-news usp --stage all
+
+# Individual stages
+uv run university-news usp --stage discovery
+uv run university-news usp --stage fetching
+uv run university-news usp --stage extraction
+
+# Several universities concurrently
+uv run university-news-all --jobs 3
+```
+
+`--start-page` and `--end-page` override the catalog's page range, and
+`--concurrency` (1–10) limits simultaneous requests. Outputs go to
+`data/sites/<site>/` unless `--output` is given.
+
+## Stages
+
+**Discovery** walks the paginated listing pages and extracts article links
+with the site's CSS selector. URLs are written to `urls.jsonl`.
+
+**Fetching** downloads each discovered URL asynchronously with `httpx`.
+Transient failures are retried with `tenacity`. Each response is recorded in
+`manifest.jsonl`; failures go to `errors.jsonl`.
+
+**Extraction** turns HTML into structured articles in `articles.jsonl`, with
+the fields title, subtitle, author, date, text, tags, links, and images. Three
+backends are available through `--extractor`:
+
+| Mode | Behavior |
+| --- | --- |
+| `trafilatura` (default) | trafilatura plus the catalog selectors and site rules |
+| `llm` | crawl4ai with an OpenRouter model returning a Pydantic schema |
+| `hybrid` | trafilatura first; falls back to the LLM when the title, author, or date is missing or the text is shorter than 200 characters |
+
+The LLM modes require `OPENROUTER_API_KEY`.
+
+## Daily discovery and recovering gaps
+
+`university-news-daily` (05:00, `university-news-daily.timer`) walks each
+listing from the newest page and stops after `stop_after_empty_pages` (3)
+consecutive pages without new URLs, up to `max_pages` (200). A normal day
+therefore reads only a few pages per site, while a gap (downtime, or a site
+fixed after weeks) is recovered automatically on the next run. Check what each
+site found with:
+
+```sql
+SELECT s->>'site', s->>'pages_checked', s->>'urls_new', s->>'errors'
+FROM pipeline_runs r, jsonb_array_elements(r.stats->'sites') s
+WHERE r.kind = 'daily-discovery' ORDER BY r.started_at DESC, 1 LIMIT 19;
+```
+
+A site with `urls_seen = 0` and no errors usually means its listing HTML
+changed and `listing_selector` no longer matches; one with errors on every page
+usually means a network or TLS problem.
+
+## TLS chains
+
+Some university servers send only their own certificate, without the
+intermediate CA, and fail verification. `shared/http_client.py` builds the TLS
+context from certifi's roots plus every PEM in `config/certs/`. The RNP
+intermediate (`RNP ICPEdu GR46 OV TLS CA 2025`, used by UFPR and other federal
+universities) is bundled there; trust still ends at a root in certifi. To add
+another, download the "CA Issuers" URL from the server certificate and convert
+it with `openssl x509 -inform der -in issuer.crt -out config/certs/<name>.pem`.
+
+## Known site limits
+
+- **USP** blocks HTML pagination beyond page 15 ("Limite de paginação
+  excedido"), so it is listed through the WordPress REST API instead
+  (`wordpress_api` and `wordpress_types = ("posts", "podcast")` in the
+  catalog), 100 articles per request and without that limit. If the API fails,
+  daily discovery falls back to the HTML listing. To recover a gap on a
+  WordPress site, list by date:
+
+  ```bash
+  uv run university-news-daily --sites usp --after 2026-07-09 --max-pages 100 --stop-after-empty-pages 100
+  ```
+- **UFC** uses `https://ufcinforma.ufc.br/pt/marcador/noticias` as its listing
+  source, with subsequent pages at `?pagina=N`. The catalog covers pages 1–17;
+  extend `end_page` as the archive grows. Article selectors support both the
+  new portal and previously downloaded HTML from `agencia.ufc.br`.

@@ -150,13 +150,16 @@ def test_compile_adds_journal_to_preprocessed_articles(tmp_path) -> None:
         {"url": "https://example/uem", "title": "UEM", "journal": "UEM"},
         {"url": "https://example/usp", "title": "USP", "journal": "USP"},
     ]
-    assert (tmp_path / "compiled" / "dashboard_articles.parquet").is_file()
+    assert (tmp_path / "compiled" / "site_articles.parquet").is_file()
     manifest = json.loads((tmp_path / "compiled" / "manifest.json").read_text())
+    assert manifest["schema_version"] == 2
+    assert stats.site_output == str(tmp_path / "compiled" / "site_articles.parquet")
+    assert manifest["site_dataset"]["path"] == "compiled/site_articles.parquet"
     assert manifest["dataset"]["articles"] == 2
     assert manifest["dataset"]["sha256"]
-    assert manifest["dashboard_dataset"]["format"] == "parquet"
-    assert manifest["dashboard_dataset"]["articles"] == 2
-    assert manifest["dashboard_dataset"]["sha256"]
+    assert manifest["site_dataset"]["format"] == "parquet"
+    assert manifest["site_dataset"]["articles"] == 2
+    assert manifest["site_dataset"]["sha256"]
     assert manifest["totals"]["accepted_articles"] == 2
     assert [site["site"] for site in manifest["universities"]] == ["uem", "usp"]
 
