@@ -2,9 +2,11 @@ import json
 
 from university_news.sources.catalog import (
     UFAL,
+    UFAM,
     UFMS,
     UFPA,
     UFRGS,
+    UFC,
     UFT,
     UNB,
     UNESP,
@@ -14,6 +16,43 @@ from university_news.pipeline.extraction import StructuredExtractor
 from university_news.pipeline.fetching import ContentFetcher
 from university_news.shared.io import read_jsonl
 from university_news.pipeline.llm_extraction import LLMArticleExtractor
+
+
+def test_ufam_extracts_article_and_publication_metadata(tmp_path) -> None:
+    url = "https://www.ufam.edu.br/noticias/8053-pesquisa.html"
+    raw_path = tmp_path / "article.html"
+    raw_path.write_text("""<html><body>
+      <nav><a href="/">Navegação do portal</a></nav>
+      <div class="item-page">
+        <h1 class="documentFirstHeading">Pesquisa sobre inteligência artificial na UFAM</h1>
+        <div class="documentByLine">
+          <span class="documentAuthor">Escrito por <strong>ascom.ufam</strong></span>
+          <span class="documentPublished">Publicado: Terça, 03 de Novembro de 2026, 11h58</span>
+          <span class="documentModified">Última atualização em 04 de Novembro de 2026</span>
+        </div>
+        <p>A Universidade Federal do Amazonas apresentou uma pesquisa sobre inteligência
+        artificial aplicada à biotecnologia. O estudo reúne pesquisadores de diferentes
+        áreas para identificar oportunidades de inovação e desenvolvimento científico.</p>
+        <p>Durante a apresentação, os participantes discutiram métodos de análise de dados
+        e aplicações para a sociedade. O projeto busca contribuir com novas pesquisas
+        e ampliar a colaboração entre os grupos da universidade.</p>
+        <p>Conheça o <a href="/pesquisa.html">projeto de pesquisa</a>.
+        <img src="/images/pesquisa.jpg" alt="Apresentação da pesquisa"></p>
+      </div>
+    </body></html>""", encoding="utf-8")
+
+    article = StructuredExtractor(
+        tmp_path, tmp_path / "articles.jsonl", site=UFAM
+    ).extract_file(raw_path, url)
+
+    assert article["title"] == "Pesquisa sobre inteligência artificial na UFAM"
+    assert article["author"] == "ascom.ufam"
+    assert article["date"] == "2026-11-03"
+    assert article["subtitle"] is None
+    assert "aplicada à biotecnologia" in article["text"]
+    assert "Navegação do portal" not in article["text"]
+    assert "https://www.ufam.edu.br/pesquisa.html" in article["links"]
+    assert "https://www.ufam.edu.br/images/pesquisa.jpg" in article["images"]
 
 
 def test_extraction_normalizes_fields_and_resumes(tmp_path, monkeypatch) -> None:
@@ -292,6 +331,58 @@ def test_uft_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> Non
     assert article["author"] == "Maria Silva"
     assert article["date"] == "2026-07-02"
     assert article["tags"] == ["Pesquisa", "UFT"]
+
+
+def test_ufc_informa_metadata_is_enriched_from_stable_html(
+    tmp_path, monkeypatch
+) -> None:
+    url = "https://ufcinforma.ufc.br/pt/noticias/materia"
+    raw_path = tmp_path / "article.html"
+    raw_path.write_text(
+        """<main id="content"><div class="container">
+          <div class="mb-4">
+            <h2>Título UFC Informa</h2>
+            <p class="mt-4">Subtítulo da matéria</p>
+          </div>
+          <div class="flex flex-col md:flex-row">
+            <div class="text-sm flex flex-col">
+              <div>Quinta, 29 outubro 2026 13:30</div>
+              <div class="font-semibold">Escrito por Secom UFC</div>
+            </div>
+          </div>
+          <div id="page"><p>Corpo editorial</p>
+            <ul><li><a href="/pt/marcador/noticias">Notícias</a></li>
+              <li><a href="/pt/marcador/pesquisa">Pesquisa</a></li></ul>
+          </div>
+        </div></main>""",
+        encoding="utf-8",
+    )
+
+    def fake_trafilatura(*args, **kwargs):
+        if kwargs["output_format"] == "json":
+            return json.dumps(
+                {
+                    "title": None,
+                    "author": None,
+                    "date": None,
+                    "text": "x" * 300,
+                }
+            )
+        return "<doc><main><p>Corpo editorial</p></main></doc>"
+
+    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
+    article = StructuredExtractor(
+        tmp_path,
+        tmp_path / "articles.jsonl",
+        mode="trafilatura",
+        site=UFC,
+    ).extract_file(raw_path, url)
+
+    assert article["title"] == "Título UFC Informa"
+    assert article["subtitle"] == "Subtítulo da matéria"
+    assert article["author"] == "Secom UFC"
+    assert article["date"] == "2026-10-29"
+    assert article["tags"] == ["Notícias", "Pesquisa"]
 
 
 def test_unesp_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:

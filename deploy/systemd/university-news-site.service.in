@@ -1,0 +1,16 @@
+[Unit]
+Description=University news public website and search API
+After=network-online.target university-news-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStartPre=__UV__ run university-news-site build
+ExecStart=__UV__ run university-news-site serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

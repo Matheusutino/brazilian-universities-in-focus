@@ -1,0 +1,14 @@
+[Unit]
+Description=Discover new Brazilian university news
+After=network-online.target postgresql.service university-news-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStart=__UV__ run university-news-daily
+
+[Install]
+WantedBy=default.target

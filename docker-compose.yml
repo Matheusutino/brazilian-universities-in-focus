@@ -1,0 +1,28 @@
+# PostgreSQL for machines with Docker access. Without Docker or root, use
+# scripts/setup_local_postgres.sh instead. Both expose the same database.
+#
+#   POSTGRES_PASSWORD=... docker compose up -d
+#   DATABASE_URL=postgresql://university_news:<password>@127.0.0.1:5432/university_news
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: deploy/postgres/Dockerfile
+    image: university-news-postgres:16-pg-search-0.26.4
+    command: ["postgres", "-c", "shared_preload_libraries=pg_search"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: university_news
+      POSTGRES_DB: university_news
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - university-news-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U university_news -d university_news"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  university-news-postgres:

@@ -7,26 +7,30 @@ import json
 import os
 import re
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from .schema import ClippingSchema, normalize_evidence_locations
+from ..settings import config_section
+from ..operations.identity import stable_article_id
+from .rate_limit import PacedPool
+from .schema import SHARED_SECTION, ClippingSchema
 
 DEFAULT_MODEL = "externo.revejo-qwen3.6-35b-a3b"
 DEFAULT_NVIDIA_NIM_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MAX_INPUT_CHARS = 24_000
 SUPPORTED_PROVIDERS = {"openwebui", "nvidia_nim"}
+# HTTP 429 responses are retried by the client, through the pacer, without
+# consuming a validation attempt or failing the job.
+RATE_LIMIT_RETRIES = 8
+DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 20.0
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+# Semantic halves of the contract, used when one call does not fit the context.
 _SECTION_BUNDLES = (
-    ("document", "summary", "entities", "classification", "topics", "five_w_one_h"),
-    ("academic_scientific_content",),
-    ("societal_relevance", "collaboration_and_reach", "science_communication"),
-    ("institutional_visibility", "media_analysis"),
-    ("clipping_intelligence", "metric_inputs", "claims"),
+    ("summary", "classification", "topics", "entities"),
+    ("context", "research", "societal_impact", "communication"),
 )
 
 
@@ -82,78 +86,74 @@ def normalize_nvidia_nim_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, f"{path}/", "", ""))
 
 
-def _environment_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be true or false")
-
-
 @dataclass(frozen=True, slots=True)
 class EnrichmentSettings:
     url: str
-    api_key: str
+    api_keys: tuple[str, ...]
     model: str = DEFAULT_MODEL
     provider: str = "openwebui"
     temperature: float = 0.2
     timeout_seconds: float = 300.0
     max_retries: int = 3
     validation_attempts: int = 2
-    enrichment_calls: int = 3
+    enrichment_calls: int = 1
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS
     max_output_tokens: int | None = None
     disable_thinking: bool = False
     json_mode: bool = True
+    # Per API key; None disables client-side pacing.
+    requests_per_minute: float | None = None
 
     def __post_init__(self) -> None:
         if self.provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
-                "ENRICHMENT_PROVIDER must be 'openwebui' or 'nvidia_nim'"
+                "enrichment.provider must be 'openwebui' or 'nvidia_nim'"
             )
         self._normalize_url(self.url)
-        if not self.api_key.strip():
+        if not self.api_keys or not all(key.strip() for key in self.api_keys):
             key_name = (
-                "NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY)"
+                "NVIDIA_API_KEYS or NVIDIA_API_KEY"
                 if self.provider == "nvidia_nim"
-                else "OPENWEBUI_API_KEY"
+                else "OPENWEBUI_API_KEYS or OPENWEBUI_API_KEY"
             )
             raise ValueError(f"{key_name} is not set in .env")
+        if len(set(self.api_keys)) != len(self.api_keys):
+            raise ValueError("API keys must be distinct")
+        if self.requests_per_minute is not None and self.requests_per_minute <= 0:
+            raise ValueError(
+                f"enrichment.{self.provider}.requests_per_minute must be positive"
+            )
         if not self.model.strip():
-            raise ValueError(f"{self.environment_prefix}_MODEL cannot be empty")
+            raise ValueError(f"enrichment.{self.provider}.model cannot be empty")
         if not 0 <= self.temperature <= 2:
             raise ValueError(
-                f"{self.environment_prefix}_TEMPERATURE must be between 0 and 2"
+                f"enrichment.{self.provider}.temperature must be between 0 and 2"
             )
         if self.timeout_seconds <= 0:
-            raise ValueError(f"{self.environment_prefix}_TIMEOUT_SECONDS must be positive")
+            raise ValueError(
+                f"enrichment.{self.provider}.timeout_seconds must be positive"
+            )
         if self.max_retries < 0:
-            raise ValueError(f"{self.environment_prefix}_MAX_RETRIES cannot be negative")
+            raise ValueError(
+                f"enrichment.{self.provider}.max_retries cannot be negative"
+            )
         if self.validation_attempts < 1:
             raise ValueError(
-                f"{self.environment_prefix}_VALIDATION_ATTEMPTS must be at least 1"
+                f"enrichment.{self.provider}.validation_attempts must be at least 1"
             )
         if not 1 <= self.enrichment_calls <= len(_SECTION_BUNDLES):
             raise ValueError(
-                f"{self.environment_prefix}_ENRICHMENT_CALLS must be between 1 "
+                f"enrichment.{self.provider}.calls must be between 1 "
                 f"and {len(_SECTION_BUNDLES)}"
             )
         if self.max_input_chars < 1_000:
             raise ValueError(
-                f"{self.environment_prefix}_MAX_INPUT_CHARS must be at least 1000"
+                f"enrichment.{self.provider}.max_input_chars must be at least 1000"
             )
         if self.max_output_tokens is not None and self.max_output_tokens < 1:
             raise ValueError(
-                f"{self.environment_prefix}_MAX_OUTPUT_TOKENS must be positive"
+                f"enrichment.{self.provider}.max_output_tokens must be positive"
             )
-
-    @property
-    def environment_prefix(self) -> str:
-        return "OPENWEBUI" if self.provider == "openwebui" else "NVIDIA_NIM"
 
     def _normalize_url(self, value: str) -> str:
         if self.provider == "nvidia_nim":
@@ -165,69 +165,111 @@ class EnrichmentSettings:
         return self._normalize_url(self.url)
 
     @classmethod
-    def from_env(cls, **overrides: Any) -> EnrichmentSettings:
+    def from_config(
+        cls,
+        *,
+        config: Mapping[str, Any] | None = None,
+        **overrides: Any,
+    ) -> EnrichmentSettings:
+        configured = dict(config or config_section("enrichment"))
         provider = str(
             overrides.pop("provider", None)
-            or os.getenv("ENRICHMENT_PROVIDER", "openwebui")
+            or configured.get("provider", "openwebui")
         ).strip().lower()
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
-                "ENRICHMENT_PROVIDER must be 'openwebui' or 'nvidia_nim'"
+                "enrichment.provider must be 'openwebui' or 'nvidia_nim'"
             )
-        prefix = "OPENWEBUI" if provider == "openwebui" else "NVIDIA_NIM"
+        provider_config = configured.get(provider)
+        if not isinstance(provider_config, Mapping):
+            raise TypeError(f"Missing [enrichment.{provider}] configuration")
         default_url = "" if provider == "openwebui" else DEFAULT_NVIDIA_NIM_URL
         default_model = DEFAULT_MODEL if provider == "openwebui" else ""
-        default_calls = "3" if provider == "openwebui" else "1"
         default_input_chars = (
-            str(DEFAULT_MAX_INPUT_CHARS) if provider == "openwebui" else "120000"
+            DEFAULT_MAX_INPUT_CHARS if provider == "openwebui" else 120_000
         )
-        default_output_tokens = "" if provider == "openwebui" else "16384"
-        url = str(overrides.pop("url", None) or os.getenv(f"{prefix}_URL", default_url))
-        key = overrides.pop("api_key", None) or os.getenv(f"{prefix}_API_KEY", "")
-        if provider == "nvidia_nim" and not key:
-            key = os.getenv("NVIDIA_API_KEY", "")
-        key = str(key)
+        default_output_tokens = None if provider == "openwebui" else 16_384
+        url = str(overrides.pop("url", None) or provider_config.get("url", default_url))
+        keys = overrides.pop("api_keys", None) or api_keys_from_env(provider)
         if not url.strip():
-            raise ValueError(f"{prefix}_URL is not set in .env")
-        max_output = os.getenv(f"{prefix}_MAX_OUTPUT_TOKENS", default_output_tokens)
+            raise ValueError(f"enrichment.{provider}.url is not configured")
         values = {
             "url": url,
-            "api_key": key,
-            "model": os.getenv(f"{prefix}_MODEL", default_model),
+            "api_keys": tuple(keys),
+            "model": provider_config.get("model", default_model),
             "provider": provider,
-            "temperature": float(os.getenv(f"{prefix}_TEMPERATURE", "0.2")),
-            "timeout_seconds": float(
-                os.getenv(f"{prefix}_TIMEOUT_SECONDS", "300")
-            ),
-            "max_retries": int(os.getenv(f"{prefix}_MAX_RETRIES", "3")),
+            "temperature": float(provider_config.get("temperature", 0.2)),
+            "timeout_seconds": float(provider_config.get("timeout_seconds", 300)),
+            "max_retries": int(provider_config.get("max_retries", 3)),
             "validation_attempts": int(
-                os.getenv(f"{prefix}_VALIDATION_ATTEMPTS", "2")
+                provider_config.get("validation_attempts", 2)
             ),
-            "enrichment_calls": int(
-                os.getenv(f"{prefix}_ENRICHMENT_CALLS", default_calls)
+            "enrichment_calls": int(provider_config.get("calls", 1)),
+            "max_input_chars": int(
+                provider_config.get("max_input_chars", default_input_chars)
             ),
-            "max_input_chars": int(os.getenv(f"{prefix}_MAX_INPUT_CHARS", default_input_chars)),
-            "max_output_tokens": int(max_output) if max_output.strip() else None,
-            "disable_thinking": (
-                _environment_bool("NVIDIA_NIM_DISABLE_THINKING", True)
-                if provider == "nvidia_nim"
-                else _environment_bool("OPENWEBUI_DISABLE_THINKING", False)
+            "max_output_tokens": provider_config.get(
+                "max_output_tokens", default_output_tokens
             ),
-            "json_mode": _environment_bool(f"{prefix}_JSON_MODE", True),
+            "disable_thinking": bool(
+                provider_config.get("disable_thinking", provider == "nvidia_nim")
+            ),
+            "json_mode": bool(provider_config.get("json_mode", True)),
+            "requests_per_minute": provider_config.get("requests_per_minute"),
         }
         values.update(overrides)
         return cls(**values)
 
 
-# Backwards-compatible import for code using the original provider-specific name.
-OpenWebUISettings = EnrichmentSettings
+def api_keys_from_env(provider: str) -> tuple[str, ...]:
+    """Read comma-separated *_API_KEYS, falling back to the single-key variable."""
+    prefixes = ("NVIDIA", "NVIDIA_NIM") if provider == "nvidia_nim" else ("OPENWEBUI",)
+    for prefix in prefixes:
+        many = [key.strip() for key in os.getenv(f"{prefix}_API_KEYS", "").split(",")]
+        if any(many):
+            return tuple(key for key in many if key)
+        single = os.getenv(f"{prefix}_API_KEY", "").strip()
+        if single:
+            return (single,)
+    return ()
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentProfile:
+    """Everything that determines an annotation, hashed into a stable ID.
+
+    Two runs with the same profile produce comparable annotations; changing the
+    model, schema, prompt, or generation settings creates a new profile.
+    """
+
+    id: str
+    provider: str
+    model: str
+    schema_version: str
+    prompt_sha256: str
+    settings: dict[str, Any]
+    # The exact system prompts and contract, so any annotation can be reproduced.
+    prompts: tuple[str, ...] = ()
+    contract: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "model": self.model,
+            "schema_version": self.schema_version,
+            "prompt_sha256": self.prompt_sha256,
+            "settings": self.settings,
+            "prompts": list(self.prompts),
+            "contract": self.contract,
+        }
 
 
 def article_id(article: dict[str, Any]) -> str:
     url = article.get("url")
     if not isinstance(url, str) or not url.strip():
         raise ValueError("Article has no URL")
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, url.strip()))
+    return str(stable_article_id(url))
 
 
 def article_content_hash(article: dict[str, Any]) -> str:
@@ -292,17 +334,83 @@ class ClippingEnricher:
         if client is None:
             from openai import OpenAI
 
-            client = OpenAI(
-                api_key=settings.api_key,
-                base_url=settings.base_url,
-                timeout=settings.timeout_seconds,
-                max_retries=settings.max_retries,
-            )
-        self.client = client
+            clients: list[OpenAICompatibleClient] = [
+                OpenAI(
+                    api_key=key,
+                    base_url=settings.base_url,
+                    timeout=settings.timeout_seconds,
+                    # The SDK would retry 429s outside the pacer; with pacing,
+                    # retries go through _create_completion and the job queue.
+                    max_retries=0 if settings.requests_per_minute else settings.max_retries,
+                )
+                for key in settings.api_keys
+            ]
+        else:
+            clients = [client]
+        self.clients = PacedPool(clients, settings.requests_per_minute)
+        self.profile = self._build_profile()
 
     @property
     def strategy(self) -> str:
-        return f"full-schema-multicall-v1:{self.settings.enrichment_calls}"
+        return f"sections-v2:{self.settings.enrichment_calls}"
+
+    def _build_profile(self) -> EnrichmentProfile:
+        prompts = [
+            self._build_system_prompt(
+                {key: self.schema.template[key] for key in (*sections, SHARED_SECTION)},
+                call_number=call_number,
+                total_calls=self.settings.enrichment_calls,
+            )
+            for call_number, sections in enumerate(
+                section_groups(self.settings.enrichment_calls), start=1
+            )
+        ]
+        prompt_sha256 = hashlib.sha256("\n".join(prompts).encode("utf-8")).hexdigest()
+        settings = {
+            "strategy": self.strategy,
+            "temperature": self.settings.temperature,
+            "calls": self.settings.enrichment_calls,
+            "max_input_chars": self.settings.max_input_chars,
+            "max_output_tokens": self.settings.max_output_tokens,
+            "disable_thinking": self.settings.disable_thinking,
+            "json_mode": self.settings.json_mode,
+            "validation_attempts": self.settings.validation_attempts,
+        }
+        identity = json.dumps(
+            {
+                "provider": self.settings.provider,
+                "model": self.settings.model,
+                "schema_version": self.schema.version,
+                "prompt_sha256": prompt_sha256,
+                "settings": settings,
+            },
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+        model_slug = re.sub(r"[^a-z0-9]+", "-", self.settings.model.split("/")[-1].lower())
+        return EnrichmentProfile(
+            id=f"{model_slug.strip('-')}-v{self.schema.version}-{digest}",
+            provider=self.settings.provider,
+            model=self.settings.model,
+            schema_version=self.schema.version,
+            prompt_sha256=prompt_sha256,
+            settings=settings,
+            prompts=tuple(prompts),
+            contract=self.schema.template,
+        )
+
+    def model_info(self) -> dict[str, Any]:
+        """What the endpoint publishes about the model (best effort)."""
+        try:
+            _index, client, _waited = self.clients.acquire()
+            listing = client.models.list()  # type: ignore[attr-defined]
+            for entry in getattr(listing, "data", listing):
+                if getattr(entry, "id", None) == self.settings.model:
+                    dumped = entry.model_dump() if hasattr(entry, "model_dump") else dict(entry)
+                    return json.loads(json.dumps(dumped, default=str))
+            return {"error": "model not listed by the endpoint"}
+        except Exception as exc:  # noqa: BLE001 - metadata must never block a run
+            return {"error": f"{type(exc).__name__}: {exc}"[:500]}
 
     @staticmethod
     def _build_system_prompt(
@@ -320,13 +428,14 @@ class ClippingEnricher:
             "Você extrai metadados estruturados de notícias universitárias "
             f"brasileiras. Esta é a parte {call_number} de {total_calls}. "
             "Responda somente com o JSON completo deste fragmento, sem Markdown. "
-            "Preserve todos os campos do fragmento. Use apenas o texto fornecido; "
-            "para informação ausente, use null, lista vazia, baixa confiança e "
-            "quality_control. Evidências devem ser trechos curtos e literais. "
-            "Em evidence.location, use paragraph_N para qualquer número positivo "
-            "de parágrafo e other para metadados ou outra localização. "
-            f"Use IDs de evidência iniciados por E{call_number}_. Não calcule "
-            "metric_inputs.final_score.\nContrato do fragmento:\n"
+            "Preserve todos os campos do fragmento e use exatamente os valores "
+            "listados quando houver opções separadas por |. Use apenas o texto "
+            "fornecido; para informação ausente, use null ou lista vazia, sem "
+            "inventar. Números do contrato são apenas exemplos de tipo: em sdgs, "
+            "liste só os ODS (1 a 17) diretamente relacionados à notícia, ou "
+            "lista vazia. Escreva os textos livres em português. Marque "
+            "quality.requires_human_review quando a notícia for ambígua ou "
+            "contraditória.\nContrato do fragmento:\n"
             f"{compact_contract}"
         )
 
@@ -366,7 +475,7 @@ class ClippingEnricher:
         for call_number, sections in enumerate(groups, start=1):
             contract = {
                 key: self.schema.template[key]
-                for key in ("processing", *sections, "evidence", "quality_control")
+                for key in (*sections, SHARED_SECTION)
             }
             fragment_input = dict(input_document)
             if known_entities:
@@ -391,15 +500,13 @@ class ClippingEnricher:
                 )
                 raise
             fragment = fragment_result.fragment
-            _namespace_evidence(fragment, call_number)
-            self.schema.validate_fragment(fragment, sections)
             fragments.append((sections, fragment))
             call_metrics.append(fragment_result.metrics)
             entities = fragment.get("entities")
             if isinstance(entities, list):
                 known_entities = [item for item in entities if isinstance(item, dict)]
 
-        analysis = merge_fragments(fragments, model=self.settings.model)
+        analysis = merge_fragments(fragments)
         try:
             result = self._finalize(
                 analysis,
@@ -469,19 +576,11 @@ class ClippingEnricher:
         for attempt in range(self.settings.validation_attempts):
             if on_request_start is not None:
                 on_request_start(call_number, total_calls, attempt + 1)
-            attempt_started = time.perf_counter()
             try:
-                completion = self.client.chat.completions.create(**request)
-            except Exception as exc:
-                attempt_metrics.append(
-                    _attempt_metrics(
-                        attempt + 1,
-                        _empty_completion_metrics(),
-                        time.perf_counter() - attempt_started,
-                        valid=False,
-                        request_error=f"{type(exc).__name__}: {exc}",
-                    )
+                completion, pacing, attempt_started = self._create_completion(
+                    request, attempt + 1, attempt_metrics
                 )
+            except Exception as exc:
                 exc.call_metrics = _call_metrics(  # type: ignore[attr-defined]
                     call_number,
                     sections,
@@ -489,7 +588,7 @@ class ClippingEnricher:
                     time.perf_counter() - call_started,
                 )
                 raise
-            request_metrics = _completion_metrics(completion)
+            request_metrics = _completion_metrics(completion) | pacing
             content: Any = None
             try:
                 if not getattr(completion, "choices", None):
@@ -498,7 +597,6 @@ class ClippingEnricher:
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("OpenWebUI returned an empty completion")
                 fragment = parse_json_object(content)
-                normalize_evidence_locations(fragment)
                 validated = self.schema.validate_fragment(fragment, sections)
             except (TypeError, ValueError) as exc:
                 last_error = exc
@@ -552,6 +650,39 @@ class ClippingEnricher:
         )
         raise last_error
 
+    def _create_completion(
+        self,
+        request: dict[str, Any],
+        attempt: int,
+        attempt_metrics: list[dict[str, Any]],
+    ) -> tuple[Any, dict[str, Any], float]:
+        """Send one request, waiting out HTTP 429 responses on the same key."""
+        for rate_limit_try in range(RATE_LIMIT_RETRIES + 1):
+            key_index, client, waited = self.clients.acquire()
+            pacing = {
+                "api_key_index": key_index,
+                "rate_limit_wait_seconds": round(waited, 3),
+            }
+            attempt_started = time.perf_counter()
+            try:
+                return client.chat.completions.create(**request), pacing, attempt_started
+            except Exception as exc:
+                rate_limited = _is_rate_limited(exc)
+                attempt_metrics.append(
+                    _attempt_metrics(
+                        attempt,
+                        _empty_completion_metrics() | pacing,
+                        time.perf_counter() - attempt_started,
+                        valid=False,
+                        request_error=f"{type(exc).__name__}: {exc}",
+                        rate_limited=rate_limited,
+                    )
+                )
+                if not rate_limited or rate_limit_try == RATE_LIMIT_RETRIES:
+                    raise
+                self.clients.penalize(key_index, _retry_after_seconds(exc))
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def _finalize(
         self,
         analysis: dict[str, Any],
@@ -563,35 +694,18 @@ class ClippingEnricher:
         url = str(article["url"]).strip()
 
         processed_at = datetime.now(UTC).isoformat()
-        analysis["schema_version"] = self.schema.version
-        document = analysis.setdefault("document", {})
-        if not isinstance(document, dict):
-            raise TypeError("The model returned an invalid document section")
-        document.update(
-            {
-                "document_id": article_id(article),
-                "url": url,
-                "source_university": university.upper(),
-                "title": str(article.get("title") or "").strip(),
-                "subtitle": _optional_text(article.get("subtitle")),
-                "author": _optional_text(article.get("author")),
-                "publication_date": _optional_date(article.get("date")),
-                "language": "pt-BR",
-            }
+        document = {
+            "document_id": article_id(article),
+            "url": url,
+            "source_university": university.upper(),
+            "title": str(article.get("title") or "").strip(),
+            "subtitle": _optional_text(article.get("subtitle")),
+            "author": _optional_text(article.get("author")),
+            "publication_date": _optional_date(article.get("date")),
+        }
+        validated = self.schema.validate(
+            {"schema_version": self.schema.version, "document": document, **analysis}
         )
-        processing = analysis.setdefault("processing", {})
-        if not isinstance(processing, dict):
-            raise TypeError("The model returned an invalid processing section")
-        processing["model"] = self.settings.model
-        processing["processed_at"] = processed_at
-        warnings = processing.get("warnings")
-        if not isinstance(warnings, list):
-            warnings = []
-            processing["warnings"] = warnings
-        if truncated and "input_text_truncated" not in warnings:
-            warnings.append("input_text_truncated")
-
-        validated = self.schema.validate(analysis)
         return {
             "article_id": document["document_id"],
             "url": url,
@@ -609,116 +723,33 @@ class ClippingEnricher:
 
 
 def section_groups(call_count: int) -> tuple[tuple[str, ...], ...]:
-    """Return stable semantic partitions for one to five model calls."""
+    """Return stable semantic partitions for one or two model calls."""
     if not 1 <= call_count <= len(_SECTION_BUNDLES):
         raise ValueError(f"calls must be between 1 and {len(_SECTION_BUNDLES)}")
     if call_count == 1:
         return (tuple(section for bundle in _SECTION_BUNDLES for section in bundle),)
-    if call_count == 2:
-        partitions = (_SECTION_BUNDLES[:3], _SECTION_BUNDLES[3:])
-    elif call_count == 3:
-        partitions = (
-            _SECTION_BUNDLES[:1],
-            _SECTION_BUNDLES[1:3],
-            _SECTION_BUNDLES[3:],
-        )
-    elif call_count == 4:
-        partitions = (
-            _SECTION_BUNDLES[:1],
-            _SECTION_BUNDLES[1:2],
-            _SECTION_BUNDLES[2:3],
-            _SECTION_BUNDLES[3:],
-        )
-    else:
-        partitions = tuple((bundle,) for bundle in _SECTION_BUNDLES)
-    return tuple(
-        tuple(section for bundle in partition for section in bundle)
-        for partition in partitions
-    )
-
-
-def _namespace_evidence(fragment: dict[str, Any], call_number: int) -> None:
-    evidence = fragment.get("evidence")
-    if not isinstance(evidence, list):
-        return
-    replacements: dict[str, str] = {}
-    for index, item in enumerate(evidence, start=1):
-        if not isinstance(item, dict):
-            continue
-        old = item.get("evidence_id")
-        if isinstance(old, str):
-            replacements[old] = f"E{call_number}_{index}"
-
-    def replace(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: replace(child) for key, child in value.items()}
-        if isinstance(value, list):
-            return [replace(child) for child in value]
-        return replacements.get(value, value) if isinstance(value, str) else value
-
-    updated = replace(fragment)
-    fragment.clear()
-    fragment.update(updated)
+    return _SECTION_BUNDLES
 
 
 def merge_fragments(
     fragments: list[tuple[tuple[str, ...], dict[str, Any]]],
-    *,
-    model: str,
 ) -> dict[str, Any]:
     analysis: dict[str, Any] = {}
-    evidence: list[Any] = []
-    processing_records: list[dict[str, Any]] = []
-    quality_records: list[dict[str, Any]] = []
     for sections, fragment in fragments:
         for section in sections:
             analysis[section] = fragment[section]
-        evidence.extend(fragment["evidence"])
-        processing_records.append(fragment["processing"])
-        quality_records.append(fragment["quality_control"])
-    analysis["processing"] = _merge_processing(processing_records, model)
-    analysis["evidence"] = evidence
-    analysis["quality_control"] = _merge_quality_control(quality_records)
-    return analysis
-
-
-def _merge_processing(records: list[dict[str, Any]], model: str) -> dict[str, Any]:
     status_priority = {"complete": 0, "partial": 1, "insufficient_content": 2}
-    statuses = [str(record["analysis_status"]) for record in records]
-    confidences = [float(record["overall_confidence"]) for record in records]
-    warnings = _unique_items(
-        warning for record in records for warning in record.get("warnings", [])
-    )
-    return {
-        "model": model,
-        "processed_at": datetime.now(UTC).isoformat(),
-        "analysis_status": max(statuses, key=lambda item: status_priority[item]),
-        "overall_confidence": sum(confidences) / len(confidences),
-        "warnings": warnings,
+    qualities = [fragment[SHARED_SECTION] for _sections, fragment in fragments]
+    analysis[SHARED_SECTION] = {
+        "analysis_status": max(
+            (str(quality["analysis_status"]) for quality in qualities),
+            key=lambda status: status_priority[status],
+        ),
+        "requires_human_review": any(
+            bool(quality["requires_human_review"]) for quality in qualities
+        ),
     }
-
-
-def _merge_quality_control(records: list[dict[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key in records[0]:
-        if key == "requires_human_review":
-            result[key] = any(bool(record[key]) for record in records)
-        else:
-            result[key] = _unique_items(
-                item for record in records for item in record.get(key, [])
-            )
-    return result
-
-
-def _unique_items(values: Any) -> list[Any]:
-    unique: list[Any] = []
-    seen: set[str] = set()
-    for value in values:
-        marker = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        if marker not in seen:
-            seen.add(marker)
-            unique.append(value)
-    return unique
+    return analysis
 
 
 def _metric_value(source: Any, *names: str) -> Any:
@@ -741,8 +772,19 @@ def _optional_int(value: Any) -> int | None:
 
 def _completion_metrics(completion: Any) -> dict[str, Any]:
     usage = _metric_value(completion, "usage")
+    choices = _metric_value(completion, "choices") or []
+    first_choice = choices[0] if choices else None
     return {
         "request_id": _optional_text(_metric_value(completion, "_request_id")),
+        # What actually answered: routed endpoints may name another model or
+        # upstream provider than the one requested.
+        "response_id": _optional_text(_metric_value(completion, "id")),
+        "response_model": _optional_text(_metric_value(completion, "model")),
+        "upstream_provider": _optional_text(_metric_value(completion, "provider")),
+        "system_fingerprint": _optional_text(
+            _metric_value(completion, "system_fingerprint")
+        ),
+        "finish_reason": _optional_text(_metric_value(first_choice, "finish_reason")),
         "prompt_tokens": _optional_int(
             _metric_value(usage, "prompt_tokens", "input_tokens")
         ),
@@ -756,6 +798,11 @@ def _completion_metrics(completion: Any) -> dict[str, Any]:
 def _empty_completion_metrics() -> dict[str, Any]:
     return {
         "request_id": None,
+        "response_id": None,
+        "response_model": None,
+        "upstream_provider": None,
+        "system_fingerprint": None,
+        "finish_reason": None,
         "prompt_tokens": None,
         "completion_tokens": None,
         "total_tokens": None,
@@ -770,6 +817,7 @@ def _attempt_metrics(
     valid: bool,
     validation_error: str | None = None,
     request_error: str | None = None,
+    rate_limited: bool = False,
 ) -> dict[str, Any]:
     return {
         "attempt": attempt,
@@ -778,7 +826,23 @@ def _attempt_metrics(
         "valid": valid,
         "validation_error": validation_error,
         "request_error": request_error,
+        "rate_limited": rate_limited,
     }
+
+
+def _is_rate_limited(error: Exception) -> bool:
+    return type(error).__name__ == "RateLimitError" or getattr(
+        error, "status_code", None
+    ) == 429
+
+
+def _retry_after_seconds(error: Exception) -> float:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    try:
+        return max(float(headers.get("retry-after", "")), 1.0)
+    except (TypeError, ValueError):
+        return DEFAULT_RATE_LIMIT_PAUSE_SECONDS
 
 
 def _token_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -813,7 +877,12 @@ def _call_metrics(
         "sections": list(sections),
         "duration_seconds": round(duration_seconds, 3),
         "attempts": len(attempts),
-        "validation_retries": max(len(attempts) - 1, 0),
+        "validation_retries": sum(
+            1 for attempt in attempts[:-1] if attempt.get("validation_error")
+        ),
+        "rate_limited_requests": sum(
+            1 for attempt in attempts if attempt.get("rate_limited")
+        ),
         "correction_duration_seconds": round(
             sum(float(attempt["duration_seconds"]) for attempt in attempts[1:]),
             3,
@@ -847,8 +916,21 @@ def _aggregate_generation_metrics(
         "validation_retries": sum(
             int(call.get("validation_retries", 0)) for call in calls
         ),
+        "rate_limited_requests": sum(
+            int(call.get("rate_limited_requests", 0)) for call in calls
+        ),
+        "response_models": sorted(
+            {str(a["response_model"]) for a in attempts if a.get("response_model")}
+        ),
+        "upstream_providers": sorted(
+            {str(a["upstream_provider"]) for a in attempts if a.get("upstream_provider")}
+        ),
         "correction_duration_seconds": round(
             sum(float(call.get("correction_duration_seconds", 0.0)) for call in calls),
+            3,
+        ),
+        "rate_limit_wait_seconds": round(
+            sum(float(attempt.get("rate_limit_wait_seconds", 0.0)) for attempt in attempts),
             3,
         ),
         "request_ids": [

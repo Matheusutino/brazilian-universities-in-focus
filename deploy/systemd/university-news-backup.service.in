@@ -1,0 +1,9 @@
+[Unit]
+Description=Dump the university-news PostgreSQL database to data/backups
+After=university-news-postgres.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStart=__PROJECT_ROOT__/scripts/backup_database.sh

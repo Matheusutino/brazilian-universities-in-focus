@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="40" viewBox="0 0 300 40">
+  <circle cx="20" cy="20" r="17" fill="#D9F25F"/>
+  <circle cx="20" cy="20" r="10" fill="none" stroke="#176B52" stroke-width="2.5"/>
+  <circle cx="20" cy="20" r="4" fill="#176B52"/>
+  <text x="48" y="27" font-family="Georgia, 'Times New Roman', serif" font-size="21" font-weight="700" letter-spacing="-0.4" fill="#18201D">Universidades em Foco</text>
+</svg>

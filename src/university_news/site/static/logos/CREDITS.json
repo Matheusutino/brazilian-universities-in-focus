@@ -1,0 +1,135 @@
+{
+ "furg": {
+  "file": "furg.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_FURG_institucional.png",
+  "original": "File:Logo FURG institucional.png",
+  "license": "Public domain",
+  "author": "Pablopmc"
+ },
+ "uem": {
+  "file": "uem.png",
+  "source": "https://commons.wikimedia.org/wiki/File:LogoUEM.pdf",
+  "original": "File:LogoUEM.pdf",
+  "license": "CC BY-SA 4.0",
+  "author": "Leonardossrocha"
+ },
+ "uerj": {
+  "file": "uerj.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_UERJ.svg",
+  "original": "File:Logo UERJ.svg",
+  "license": "Public domain",
+  "author": "Universidade do Estado do Rio de Janeiro"
+ },
+ "ufabc": {
+  "file": "ufabc.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Ufabc_logo.png",
+  "original": "File:Ufabc logo.png",
+  "license": "Public domain",
+  "author": "Agência ECA Jr."
+ },
+ "ufal": {
+  "file": "ufal.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Bras%C3%A3o_Ufal.png",
+  "original": "File:Brasão Ufal.png",
+  "license": "Public domain",
+  "author": "Universidade Federal de Alagoas"
+ },
+ "ufc": {
+  "file": "ufc.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Brasao4_vertical_cor_300dpi.png",
+  "original": "File:Brasao4 vertical cor 300dpi.png",
+  "license": "Public domain",
+  "author": "The University of CearáPNG file by RubenilsonVasc2010"
+ },
+ "ufla": {
+  "file": "ufla.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_Ufla.gif",
+  "original": "File:Logo Ufla.gif",
+  "license": "CC BY-SA 3.0",
+  "author": "Igorc2"
+ },
+ "ufmg": {
+  "file": "ufmg.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Symbolfumg.jpg",
+  "original": "File:Symbolfumg.jpg",
+  "license": "Public domain",
+  "author": "LAZYDINOSSAURO. Formerly created by University Council in 1927."
+ },
+ "ufms": {
+  "file": "ufms.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo-UFMS.jpg",
+  "original": "File:Logo-UFMS.jpg",
+  "license": "Attribution",
+  "author": "Universidade Federal de Mato Grosso do Sul"
+ },
+ "ufpa": {
+  "file": "ufpa.png",
+  "source": "https://pt.wikipedia.org/wiki/Ficheiro:Brasao_UFPA.jpg",
+  "original": "File:Brasao UFPA.jpg",
+  "license": "Conteúdo restrito",
+  "author": "Não indicado/desconhecido"
+ },
+ "ufpr": {
+  "file": "ufpr.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_oficial_da_UFPR_(fundo_branco).svg",
+  "original": "File:Logo oficial da UFPR (fundo branco).svg",
+  "license": "CC0",
+  "author": "Universidade Federal do Paraná"
+ },
+ "ufrgs": {
+  "file": "ufrgs.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_UFRGS_formato_SVG-01.svg",
+  "original": "File:Logo UFRGS formato SVG-01.svg",
+  "license": "CC BY-SA 4.0",
+  "author": "Maiquel Isago"
+ },
+ "ufrj": {
+  "file": "ufrj.png",
+  "source": "https://commons.wikimedia.org/wiki/File:UFRJ_logo.svg",
+  "original": "File:UFRJ logo.svg",
+  "license": "Public domain",
+  "author": "Universidade Federal do Rio de Janeiro"
+ },
+ "uft": {
+  "file": "uft.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Bras%C3%A3o_UFT.png",
+  "original": "File:Brasão UFT.png",
+  "license": "CC BY-SA 4.0",
+  "author": "rgnldo"
+ },
+ "unb": {
+  "file": "unb.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Webysther_20160322_-_Logo_UnB.svg",
+  "original": "File:Webysther 20160322 - Logo UnB.svg",
+  "license": "Public domain",
+  "author": "Universidade de Brasília"
+ },
+ "unesp": {
+  "file": "unesp.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Logo_Unesp.svg",
+  "original": "File:Logo Unesp.svg",
+  "license": "Public domain",
+  "author": "Giro720Original design by Israel Pedrosa."
+ },
+ "unicamp": {
+  "file": "unicamp.png",
+  "source": "https://pt.wikipedia.org/wiki/Ficheiro:UNICAMP_logo.svg",
+  "original": "File:UNICAMP logo.svg",
+  "license": "Conteúdo restrito",
+  "author": "Max Schiefer &amp; João Carlos Bross"
+ },
+ "unifesp": {
+  "file": "unifesp.png",
+  "source": "https://pt.wikipedia.org/wiki/Ficheiro:Logotipo_UNIFESP.png",
+  "original": "File:Logotipo UNIFESP.png",
+  "license": "Conteúdo restrito",
+  "author": "Universidade Federal de São Paulo"
+ },
+ "usp": {
+  "file": "usp.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Webysther_20170627_-_Bras%C3%A3o_USP.svg",
+  "original": "File:Webysther 20170627 - Brasão USP.svg",
+  "license": "Public domain",
+  "author": "José Wasth Rodrigues"
+ }
+}

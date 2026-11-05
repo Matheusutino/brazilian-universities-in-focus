@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from datetime import date
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -7,7 +8,7 @@ from bs4 import BeautifulSoup
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 from tenacity.wait import wait_random_exponential
 
-from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status
+from ..shared.http_client import RetryableHttpStatus, raise_for_retryable_status, tls_context
 from ..sources.catalog import SiteConfig
 
 
@@ -15,6 +16,8 @@ from ..sources.catalog import SiteConfig
 class DiscoveryResult:
     urls: set[str]
     errors: list[dict[str, object]]
+    # True when a WordPress listing has no more pages.
+    exhausted: bool = False
 
 
 class UrlDiscovery:
@@ -47,6 +50,7 @@ class UrlDiscovery:
         )
         headers = {"User-Agent": self.site.user_agent, "Accept": "text/html,*/*"}
         async with httpx.AsyncClient(
+            verify=tls_context(),
             headers=headers,
             follow_redirects=True,
             timeout=self.timeout,
@@ -65,6 +69,51 @@ class UrlDiscovery:
             if error is not None:
                 errors.append(error)
         return DiscoveryResult(urls=urls, errors=errors)
+
+    async def discover_wordpress(
+        self, rest_base: str, page: int, *, after: date | None = None
+    ) -> DiscoveryResult:
+        """One page (up to 100 articles) of the site's WordPress REST API."""
+        url = self.site.wordpress_page_url(rest_base, page, after=after)
+        headers = {"User-Agent": self.site.user_agent, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            verify=tls_context(),
+            headers=headers,
+            follow_redirects=True,
+            timeout=self.timeout,
+            transport=self.transport,
+        ) as client:
+            try:
+                response = await self._get(client, url)
+            except httpx.HTTPStatusError as exc:
+                # WordPress answers 400 past the last page.
+                if exc.response.status_code == 400 and "invalid_page_number" in exc.response.text:
+                    return DiscoveryResult(urls=set(), errors=[], exhausted=True)
+                return DiscoveryResult(urls=set(), errors=[self._error(page, url, exc)])
+            except Exception as exc:  # noqa: BLE001 - reported like an HTML page failure
+                return DiscoveryResult(urls=set(), errors=[self._error(page, url, exc)])
+        try:
+            items = response.json()
+        except ValueError as exc:
+            return DiscoveryResult(urls=set(), errors=[self._error(page, url, exc)])
+        urls = {
+            normalized
+            for item in items
+            if isinstance(item, dict)
+            and (normalized := self._normalize(str(item.get("link") or ""), url))
+        }
+        total_pages = int(response.headers.get("x-wp-totalpages") or 0)
+        return DiscoveryResult(urls=urls, errors=[], exhausted=not items or page >= total_pages)
+
+    @staticmethod
+    def _error(page: int, url: str, exc: Exception) -> dict[str, object]:
+        return {
+            "stage": "discovery",
+            "page": page,
+            "url": url,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
 
     async def _discover_page(
         self,
@@ -87,6 +136,9 @@ class UrlDiscovery:
             }
 
     async def _download(self, client: httpx.AsyncClient, url: str) -> str:
+        return (await self._get(client, url)).text
+
+    async def _get(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         retrying = AsyncRetrying(
             stop=stop_after_attempt(self.attempts),
             wait=wait_random_exponential(multiplier=self.retry_multiplier, max=8),
@@ -97,30 +149,28 @@ class UrlDiscovery:
             with attempt:
                 response = await client.get(url)
                 raise_for_retryable_status(response)
-                return response.text
+                return response
         raise RuntimeError("Retry completed without a result")  # pragma: no cover
 
     def parse_urls(self, html: str, listing_url: str) -> set[str]:
         soup = BeautifulSoup(html, "lxml")
         urls: set[str] = set()
-        allowed_host = urlsplit(self.site.base_url).hostname
         for anchor in soup.select(self.site.listing_selector):
             href = anchor.get("href")
-            if not isinstance(href, str) or not href.strip():
-                continue
-            absolute_url = urljoin(listing_url, href.strip())
-            absolute_url, _fragment = urldefrag(absolute_url)
-            parts = urlsplit(absolute_url)
-            if parts.scheme not in {"http", "https"} or parts.hostname != allowed_host:
-                continue
-            normalized = urlunsplit(
-                (
-                    parts.scheme.lower(),
-                    parts.netloc.lower(),
-                    parts.path,
-                    parts.query,
-                    "",
-                )
-            )
-            urls.add(normalized)
+            if isinstance(href, str) and (normalized := self._normalize(href, listing_url)):
+                urls.add(normalized)
         return urls
+
+    def _normalize(self, href: str, base_url: str) -> str | None:
+        """Absolute article URL on the site's own host, without fragment."""
+        if not href.strip():
+            return None
+        absolute_url, _fragment = urldefrag(urljoin(base_url, href.strip()))
+        parts = urlsplit(absolute_url)
+        if parts.scheme not in {"http", "https"} or parts.hostname != urlsplit(
+            self.site.base_url
+        ).hostname:
+            return None
+        return urlunsplit(
+            (parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, "")
+        )

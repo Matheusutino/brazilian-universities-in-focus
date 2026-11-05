@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import hashlib
+from functools import cached_property
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,9 @@ class QwenGGUFEmbedder:
         self.model_repo = model_repo
         self.model_file = model_file
         self.model_path = str(model_path.resolve()) if model_path is not None else None
+        # A llama.cpp context is not thread-safe: concurrent calls (two
+        # website requests searching at once) crash the process with SIGSEGV.
+        self._lock = threading.Lock()
         if backend is not None:
             self.model = backend
             return
@@ -76,6 +82,17 @@ class QwenGGUFEmbedder:
                 filename=model_file,
                 **options,
             )
+        # Record the resolved file even when loaded through the Hugging Face cache.
+        resolved = getattr(self.model, "model_path", None)
+        if resolved:
+            self.model_path = str(Path(resolved).resolve())
+
+    @cached_property
+    def model_sha256(self) -> str | None:
+        if self.model_path is None:
+            return None
+        with Path(self.model_path).open("rb") as source:
+            return hashlib.file_digest(source, "sha256").hexdigest()
 
     @property
     def dimension(self) -> int:
@@ -101,12 +118,13 @@ class QwenGGUFEmbedder:
         return shortened, True
 
     def _encode(self, texts: list[str]) -> EmbeddedBatch:
-        prepared = [self._truncate(text) for text in texts]
-        raw_vectors = self.model.embed(
-            input=[text for text, _ in prepared],
-            normalize=False,
-            truncate=False,
-        )
+        with self._lock:
+            prepared = [self._truncate(text) for text in texts]
+            raw_vectors = self.model.embed(
+                input=[text for text, _ in prepared],
+                normalize=False,
+                truncate=False,
+            )
         vectors = [list(map(float, vector)) for vector in raw_vectors]
         if len(vectors) != len(texts):
             raise RuntimeError("The model returned an unexpected number of vectors")

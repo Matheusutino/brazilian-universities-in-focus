@@ -3,26 +3,19 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SCHEMA_PATH = PROJECT_ROOT / "schema_clipping_university.json"
-_REFERENCE_ID = re.compile(r"^(?:E|ENT|C)\d+$")
-_EVIDENCE_PARAGRAPH = re.compile(r"^paragraph_[1-9]\d*$")
-_EVIDENCE_LOCATIONS = {
-    "title",
-    "subtitle",
-    "lead",
-    "paragraph_1",
-    "paragraph_2",
-    "caption",
-    "other",
-}
+from ..settings import PROJECT_ROOT
+
+DEFAULT_SCHEMA_PATH = PROJECT_ROOT / "config" / "schemas" / "university_clipping.json"
+# Sections filled deterministically from the article; never requested from the model.
+CODE_FILLED_SECTIONS = ("schema_version", "document")
+# Section returned by every model call and merged across calls.
+SHARED_SECTION = "quality"
 
 
 class ClippingValidationError(ValueError):
@@ -31,80 +24,30 @@ class ClippingValidationError(ValueError):
 
 def _number_schema(field_name: str, *, integer: bool) -> dict[str, Any]:
     schema: dict[str, Any] = {"type": "integer" if integer else "number"}
-    if field_name == "sdg":
+    if field_name == "sdgs":
         schema.update(minimum=1, maximum=17)
-    elif field_name == "technology_readiness_level":
-        schema.update(minimum=1, maximum=9)
-    elif "score_0_4" in field_name:
+    elif field_name.endswith("_0_4"):
         schema.update(minimum=0, maximum=4)
-    elif "confidence" in field_name or field_name.endswith("probability"):
-        schema.update(minimum=0, maximum=1)
     elif integer:
         schema["minimum"] = 0
     return schema
 
 
-def _string_schema(value: str, field_name: str) -> dict[str, Any]:
+def _string_schema(value: str) -> dict[str, Any]:
     variants = value.split("|")
     nullable = "null" in variants
     non_null = [variant for variant in variants if variant != "null"]
 
-    descriptor = non_null[0] if len(non_null) == 1 else None
-    if field_name == "location" and set(non_null) == _EVIDENCE_LOCATIONS:
-        schema = {
-            "type": "string",
-            "anyOf": [
-                {"enum": sorted(_EVIDENCE_LOCATIONS)},
-                {"pattern": _EVIDENCE_PARAGRAPH.pattern},
-            ],
-        }
-    elif descriptor in {"string", "string|null"}:
-        schema: dict[str, Any] = {"type": "string", "minLength": 1}
-    elif descriptor == "YYYY-MM-DD":
-        schema = {"type": "string", "format": "date"}
-    elif descriptor in {"ISO-8601", "ISO-8601 datetime"}:
-        schema = {"type": "string", "format": "date-time"}
-    elif len(non_null) > 1 and not any(
-        item in {"string", "YYYY-MM-DD", "ISO-8601", "ISO-8601 datetime"}
-        or _REFERENCE_ID.fullmatch(item)
-        for item in non_null
-    ):
+    if non_null == ["YYYY-MM-DD"]:
+        schema: dict[str, Any] = {"type": "string", "format": "date"}
+    elif len(non_null) > 1:
         schema = {"type": "string", "enum": non_null}
-    elif _REFERENCE_ID.fullmatch(value):
-        schema = {"type": "string", "minLength": 1}
-    elif field_name in {
-        "language",
-        "currency",
-        "final_score_calculated_by",
-    }:
-        schema = {"const": value}
     else:
         schema = {"type": "string", "minLength": 1}
 
     if nullable:
         return {"anyOf": [schema, {"type": "null"}]}
     return schema
-
-
-def normalize_evidence_locations(value: dict[str, Any]) -> dict[str, Any]:
-    """Normalize model-generated evidence locations before schema validation."""
-    evidence = value.get("evidence")
-    if not isinstance(evidence, list):
-        return value
-    for item in evidence:
-        if not isinstance(item, dict):
-            continue
-        location = item.get("location")
-        if not isinstance(location, str):
-            continue
-        normalized = location.strip().lower()
-        if normalized in _EVIDENCE_LOCATIONS or _EVIDENCE_PARAGRAPH.fullmatch(
-            normalized
-        ):
-            item["location"] = normalized
-        else:
-            item["location"] = "other"
-    return value
 
 
 def contract_to_json_schema(value: Any, field_name: str = "") -> dict[str, Any]:
@@ -122,8 +65,6 @@ def contract_to_json_schema(value: Any, field_name: str = "") -> dict[str, Any]:
     if isinstance(value, list):
         if not value:
             return {"type": "array"}
-        if len(value) > 1 and all(isinstance(item, str) for item in value):
-            return {"type": "array", "items": {"type": "string"}}
         return {
             "type": "array",
             "items": contract_to_json_schema(value[0], field_name),
@@ -134,10 +75,8 @@ def contract_to_json_schema(value: Any, field_name: str = "") -> dict[str, Any]:
         return _number_schema(field_name, integer=True)
     if isinstance(value, float):
         return _number_schema(field_name, integer=False)
-    if value is None:
-        return {"type": ["number", "null"]}
     if isinstance(value, str):
-        return _string_schema(value, field_name)
+        return _string_schema(value)
     raise TypeError(f"Unsupported clipping contract value: {type(value).__name__}")
 
 
@@ -179,6 +118,15 @@ class ClippingSchema:
     def version(self) -> str:
         return str(self.template["schema_version"])
 
+    @property
+    def model_sections(self) -> tuple[str, ...]:
+        """Sections the model fills, excluding the shared quality section."""
+        return tuple(
+            key
+            for key in self.template
+            if key not in CODE_FILLED_SECTIONS and key != SHARED_SECTION
+        )
+
     def validate(self, value: object) -> dict[str, Any]:
         return self._validate_with(self.validator, value)
 
@@ -188,8 +136,7 @@ class ClippingSchema:
         sections: tuple[str, ...],
     ) -> dict[str, Any]:
         """Validate one independently generated portion of the full contract."""
-        shared = ("processing", "evidence", "quality_control")
-        keys = (*shared, *sections)
+        keys = (*sections, SHARED_SECTION)
         unknown = [key for key in keys if key not in self.template]
         if unknown:
             raise ValueError(f"Unknown clipping sections: {', '.join(unknown)}")

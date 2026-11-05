@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild university-news static pages hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=university-news-publish.service
+
+[Install]
+WantedBy=timers.target

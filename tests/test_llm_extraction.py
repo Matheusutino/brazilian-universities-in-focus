@@ -105,10 +105,9 @@ def test_llm_extractor_requires_openrouter_key(monkeypatch) -> None:
         raise AssertionError("A chave do OpenRouter deveria ser obrigatoria")
 
 
-def test_model_environment_accepts_openrouter_prefix(monkeypatch) -> None:
+def test_explicit_model_accepts_openrouter_prefix(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("OPENROUTER_MODEL", "openrouter/example/model")
-    extractor = LLMArticleExtractor()
+    extractor = LLMArticleExtractor(model="openrouter/example/model")
 
     strategy = extractor._strategy()
 

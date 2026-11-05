@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% from "macros.html" import section_head, tag %}
+{% block title %}{{ article.title | truncate(80) }} · Universidades em Foco{% endblock %}
+{% block description %}{{ (a["summary.one_sentence"] if a else article.subtitle) or article.title }}{% endblock %}
+{% macro fact(name, value) -%}
+<div class="fact"><div class="fact-label">{{ name }}</div><div class="fact-value">{{ value or "—" }}</div></div>
+{%- endmacro %}
+{% macro chips(values) -%}
+{% if values %}<div class="chips">{% for value in values %}<span class="chip">{{ value }}</span>{% endfor %}</div>{% else %}<p class="chart-note">—</p>{% endif %}
+{%- endmacro %}
+{% block content %}
+<a class="detail-back" href="/explorar/">← Voltar ao acervo</a>
+<section class="page-intro">
+  <div class="card-meta">{{ tag(article.journal, article.region) }}<span class="card-region">{{ article.region }}</span><time datetime="{{ article.date or '' }}">{{ article.date | date_br }}</time></div>
+  <h1 class="page-title" style="font-size:clamp(1.9rem,3.4vw,2.6rem);margin-top:.7rem">{{ article.title }}</h1>
+  {% if article.subtitle %}<p>{{ article.subtitle }}</p>{% endif %}
+  <p><a class="analysis-link" style="margin:0" href="{{ article.url }}" target="_blank" rel="noopener noreferrer">Ler na fonte oficial ↗</a></p>
+</section>
+{% if not a %}
+<div class="empty-state">Esta notícia ainda não foi analisada.</div>
+{% else %}
+<p class="detail-lead">{{ a["summary.one_sentence"] }}</p>
+<p class="detail-text">{{ a["summary.abstract"] }}</p>
+<div class="section-head"><h2 class="section-title">Classificação</h2><div class="section-note">análise por LLM · <a href="/criterios/">critérios</a></div></div>
+<div class="fact-grid">
+  {{ fact("Tipo", "content_type" | label(a["classification.content_type"])) }}
+  {{ fact("Categoria", "news_category" | label(a["classification.news_category"])) }}
+  {{ fact("Eixos", "institutional_axes" | labels(a["classification.institutional_axes"]) | join(", ")) }}
+  {{ fact("Conteúdo científico", "scientific_content" | label(a["classification.scientific_content"])) }}
+  {{ fact("Grandes áreas", "scientific_fields" | labels(a["topics.scientific_fields"]) | join(", ")) }}
+  {{ fact("Tema principal", a["topics.main_topic"]) }}
+  {{ fact("Abrangência", "geographic_scope" | label(a["context.geographic_scope"])) }}
+  {{ fact("Público", "audience" | label(a["communication.audience"])) }}
+  {{ fact("Tom", "tone" | label(a["communication.tone"])) }}
+  {{ fact("Hype", "hype" | label(a["communication.hype"])) }}
+  {{ fact("Acessibilidade", a["communication.accessibility_0_4"] ~ " de 4") }}
+  {{ fact("Profundidade científica", a["communication.scientific_depth_0_4"] ~ " de 4") }}
+</div>
+<div class="chart-grid">
+  <div><h3 class="chart-title">Palavras-chave</h3>{{ chips(a["topics.keywords"]) }}</div>
+  <div><h3 class="chart-title">Locais</h3>{{ chips(a["context.locations"]) }}</div>
+</div>
+{{ section_head("Pesquisa e impacto") }}
+<div class="fact-grid">
+  {{ fact("Há pesquisa", "Sim" if a["research.present"] else "Não") }}
+  {{ fact("Estágio", "stage" | label(a["research.stage"])) }}
+  {{ fact("Agências de fomento", (a["research.funding_agencies"] or []) | join(", ")) }}
+  {{ fact("Colaboração", "collaboration_types" | labels(a["research.collaboration_types"]) | join(", ")) }}
+  {{ fact("Dimensões de impacto", "dimensions" | labels(a["societal_impact.dimensions"]) | join(", ")) }}
+  {{ fact("Beneficiários", (a["societal_impact.beneficiaries"] or []) | join(", ")) }}
+</div>
+{% if a["research.findings"] %}
+<h3 class="chart-title">Achados</h3>
+<ul class="detail-list">{% for finding in a["research.findings"] %}<li>{{ finding }}</li>{% endfor %}</ul>
+{% endif %}
+<h3 class="chart-title">Objetivos de Desenvolvimento Sustentável</h3>
+{{ chips((a["societal_impact.sdgs"] or []) | map("sdg") | list) }}
+{% if a.entities %}
+{{ section_head("Pessoas e instituições citadas", (a.entities | length) ~ " entidades") }}
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>Nome</th><th>Tipo</th><th>Papel</th><th>Afiliação</th></tr></thead>
+    <tbody>{% for entity in a.entities %}<tr><td>{{ entity.name }}</td><td>{{ "type" | label(entity.type) }}</td><td>{{ "role" | label(entity.role) }}</td><td>{{ entity.affiliation or "—" }}</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% endif %}
+<div class="provenance">
+  <strong>Proveniência.</strong> Anotado por <code>{{ a.model }}</code> via {{ a.provider }} em {{ (a.enriched_at or "")[:10] | date_br }} · análise {{ {"complete": "completa", "partial": "parcial", "insufficient_content": "com conteúdo insuficiente"}.get(a["quality.analysis_status"], a["quality.analysis_status"]) }}, {{ "requer revisão humana" if a["quality.requires_human_review"] else "sem pendência de revisão" }}. Os campos acima foram gerados automaticamente e podem conter erros; confira a fonte oficial.
+</div>
+{% endif %}
+{% endblock %}

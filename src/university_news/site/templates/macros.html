@@ -1,0 +1,68 @@
+{% macro tag(journal, region) -%}
+<span class="tag tag-{{ region | region_slug }}">{{ journal }}</span>
+{%- endmacro %}
+
+{% macro card(article, rank=None) -%}
+<article class="news-card">
+  {% if rank %}<span class="rank">{{ rank }}</span>{% endif %}
+  <div class="card-meta">
+    {{ tag(article.journal, article.region) }}
+    <span class="card-region">{{ article.region }}</span>
+    <time datetime="{{ article.date or '' }}">{{ article.date | date_br }}</time>
+  </div>
+  <h3><a href="/noticia/{{ article.id }}">{{ article.title }}</a></h3>
+  {% if article.subtitle %}<p>{{ article.subtitle | truncate(240) }}</p>{% endif %}
+  {% if article.analysis %}
+  <div class="card-analysis">
+    {% if article.analysis.category %}<span class="mini-tag">{{ "news_category" | label(article.analysis.category) }}</span>{% endif %}
+    {% for field in article.analysis.fields[:1] %}<span class="mini-tag">{{ "scientific_fields" | label(field) }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  <div class="card-foot">
+    <span class="byline">{% if article.author %}Por {{ article.author | truncate(55) }}{% else %}Fonte oficial da universidade{% endif %}</span>
+    <a class="card-cta" href="{{ article.url }}" target="_blank" rel="noopener noreferrer">Ler na fonte ↗</a>
+  </div>
+</article>
+{%- endmacro %}
+
+{% macro stats_strip(items) -%}
+<div class="stat-strip" style="--stat-columns:{{ items | length }}">
+  {% for value, name in items %}
+  <div class="stat"><div class="stat-value">{{ value }}</div><div class="stat-label">{{ name }}</div></div>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro section_head(title, note="") -%}
+<div class="section-head"><h2 class="section-title">{{ title }}</h2><div class="section-note">{{ note }}</div></div>
+{%- endmacro %}
+
+{% macro bar_chart(chart, wide=False) -%}
+{% set rows = chart.rows if chart.ordered else chart.rows | selectattr("count") | list %}
+{% set largest = rows | map(attribute="count") | max if rows else 0 %}
+<section class="chart{% if wide %} wide{% endif %}" data-chart="{{ chart.key }}">
+  <h3 class="chart-title">{{ chart.title }}</h3>
+  <p class="chart-note">{{ chart.note }} · <a href="/criterios/#{{ chart.key }}">o que significa?</a></p>
+  {% if largest %}
+  <div class="bars" role="list">
+    {% for row in rows %}
+    <div class="bar-row{% if not row.count %} zero{% endif %}" role="listitem" tabindex="0"
+         aria-label="{{ row.label }}: {{ row.count }} notícias ({{ row.share | percent }})">
+      <span class="bar-label">{{ row.label }}</span>
+      <span class="bar-track"><span class="bar" style="--w:{{ (row.count / largest * 100) | round(1) }}%"></span></span>
+      <span class="bar-value">{{ row.count | count }}</span>
+      <span class="tip">{{ row.label }} · {{ row.count | count }} notícias · {{ row.share | percent }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="table-wrap hidden" data-table>
+    <table class="data-table">
+      <thead><tr><th>Categoria</th><th>Notícias</th></tr></thead>
+      <tbody>{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ row.count | count }}</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="chart-note">Sem dados no recorte.</p>
+  {% endif %}
+</section>
+{%- endmacro %}

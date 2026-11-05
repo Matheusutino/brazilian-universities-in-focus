@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "macros.html" import section_head %}
+{% block title %}Sobre · Universidades em Foco{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <div class="eyebrow">Sobre o projeto</div>
+  <h1 class="page-title">Universidades em Foco</h1>
+  <p>O projeto reúne notícias publicadas por universidades brasileiras e oferece uma busca que combina palavras-chave e similaridade semântica. A proposta é facilitar estudos sobre comunicação universitária, ciência e sociedade.</p>
+</section>
+{{ section_head("Equipe e autoria", "pesquisa e desenvolvimento") }}
+<div class="author-grid">
+  {% for author in authors %}
+  <article class="author-card">
+    <div class="author-avatar">{{ author.initials }}</div>
+    <div class="author-role">{{ author.role }}</div>
+    <h3 class="author-name">{{ author.name }}</h3>
+    <div class="author-affiliation">{{ author.affiliation }}</div>
+    <p>{{ author.description }}</p>
+    <div class="author-links">{% for name, url in author.links %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ name }} ↗</a>{% endfor %}</div>
+  </article>
+  {% endfor %}
+</div>
+{{ section_head("Como funciona", "transparência metodológica") }}
+<div class="method-grid">
+  {% for title, description in methods %}
+  <div class="method-step"><div class="method-number">{{ loop.index }}</div><strong>{{ title }}</strong><span>{{ description }}</span></div>
+  {% endfor %}
+</div>
+<p class="chart-note" style="margin-top:1rem">Os conteúdos pertencem aos respectivos portais de origem. A plataforma organiza metadados e direciona o leitor para a publicação oficial.</p>
+{% endblock %}

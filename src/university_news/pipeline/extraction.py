@@ -30,8 +30,8 @@ class ExtractionResult:
 class StructuredExtractor:
     def __init__(
         self,
-        raw_directory: Path,
-        articles_path: Path,
+        raw_directory: Path | None = None,
+        articles_path: Path | None = None,
         *,
         mode: ExtractionMode = "trafilatura",
         site: SiteConfig | None = None,
@@ -46,6 +46,8 @@ class StructuredExtractor:
         self._llm_extractor = llm_extractor
 
     def run(self, urls: list[str], *, force: bool = False) -> ExtractionResult:
+        if self.articles_path is None or self.raw_directory is None:
+            raise ValueError("File batch extraction requires raw_directory and articles_path")
         processed = set() if force else self._processed_urls()
         extracted_count = 0
         skipped_count = 0
@@ -117,6 +119,10 @@ class StructuredExtractor:
 
     def extract_file(self, raw_path: Path, url: str) -> dict[str, object]:
         html = raw_path.read_text(encoding="utf-8", errors="replace")
+        return self.extract_html(html, url)
+
+    def extract_html(self, html: str, url: str) -> dict[str, object]:
+        """Extract an in-memory document without intermediate filesystem artifacts."""
         if self.mode == "llm":
             return self._llm().extract(html, url)
 
@@ -248,7 +254,10 @@ class StructuredExtractor:
             if author is not None:
                 value = author.get_text(" ", strip=True)
                 value = re.sub(
-                    r"^(?:por|texto)\s*:?\s*", "", value, flags=re.IGNORECASE
+                    r"^(?:escrito\s+por|por|texto)\s*:?\s*",
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
                 )
                 article["author"] = self._optional_string(value)
 
@@ -328,6 +337,7 @@ class StructuredExtractor:
         )
 
     def _processed_urls(self) -> set[str]:
+        assert self.articles_path is not None
         records = read_jsonl(self.articles_path)
         required_fields = {"subtitle", "links", "images"}
         if any(not required_fields.issubset(record) for record in records):

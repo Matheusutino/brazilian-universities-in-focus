@@ -1,4 +1,8 @@
 from dataclasses import dataclass
+from datetime import date
+from urllib.parse import urlencode
+
+WORDPRESS_PAGE_SIZE = 100
 
 
 DEFAULT_USER_AGENT = (
@@ -18,7 +22,6 @@ class SiteConfig:
     start_page: int = 1
     end_page: int = 1
     page_step: int = 1
-    rss_url: str | None = None
     user_agent: str = DEFAULT_USER_AGENT
     content_selector: str | None = None
     title_selector: str | None = None
@@ -27,6 +30,29 @@ class SiteConfig:
     date_selector: str | None = None
     tags_selector: str | None = None
     excluded_article_path_prefixes: tuple[str, ...] = ()
+    # WordPress REST API root (".../wp-json/wp/v2/"). When set, daily discovery
+    # lists articles through it, which has no pagination limit, and falls back
+    # to the HTML listing only if the API fails.
+    wordpress_api: str | None = None
+    wordpress_types: tuple[str, ...] = ("posts",)
+
+    def wordpress_page_url(
+        self, rest_base: str, page: int, *, after: date | None = None
+    ) -> str:
+        if not self.wordpress_api:
+            raise ValueError(f"{self.name} has no WordPress API")
+        if page < 1:
+            raise ValueError("WordPress pages start at 1")
+        params: dict[str, object] = {
+            "per_page": WORDPRESS_PAGE_SIZE,
+            "page": page,
+            "orderby": "date",
+            "order": "desc",
+            "_fields": "link,date",
+        }
+        if after is not None:
+            params["after"] = f"{after.isoformat()}T00:00:00"
+        return f"{self.wordpress_api.rstrip('/')}/{rest_base}?{urlencode(params)}"
 
     def page_url(self, page: int) -> str:
         if page < self.start_page:
@@ -57,7 +83,9 @@ USP = SiteConfig(
     listing_selector=".elementor-widget-archive-posts .elementor-post__title a",
     start_page=1,
     end_page=3579,
-    rss_url=None,
+    # The HTML listing is blocked beyond page 15 ("Limite de paginação excedido").
+    wordpress_api="https://jornal.usp.br/wp-json/wp/v2/",
+    wordpress_types=("posts", "podcast"),
     content_selector="main#main",
     excluded_article_path_prefixes=("/articulista/",),
 )
@@ -67,11 +95,11 @@ UFAL = SiteConfig(
     base_url="https://noticias.ufal.br/",
     listing_url="https://noticias.ufal.br/",
     paginated_url="https://noticias.ufal.br/?b_start:int={page}",
-    listing_selector="#content-core a.titulo",
+    # The 2026 layout dropped the "titulo" class; news links keep /noticias/<year>/.
+    listing_selector='#content-core a[href*="/noticias/20"]',
     start_page=0,
     end_page=23880,
     page_step=30,
-    rss_url=None,
     content_selector="article#content",
     title_selector="article#content h1",
     subtitle_selector="article#content p.lead",
@@ -92,7 +120,6 @@ UNESP = SiteConfig(
     start_page=1,
     end_page=136,
     page_step=1,
-    rss_url=None,
     content_selector=(
         ".article-header, article.type-post, "
         ".col-12.col-lg-9.pr-lg-5 .article-date, "
@@ -117,7 +144,6 @@ UNB = SiteConfig(
     start_page=0,
     end_page=2420,
     page_step=10,
-    rss_url=None,
     content_selector=(
         ".item-page .chapeu, .item-page .page-header, "
         ".item-page > p:first-of-type, .item-page .article-info, "
@@ -139,7 +165,6 @@ UFMS = SiteConfig(
     start_page=1,
     end_page=626,
     page_step=1,
-    rss_url=None,
     content_selector=".post-inner-content",
     title_selector=".post-inner-content h1.entry-title",
     date_selector=".post-inner-content time.entry-date",
@@ -155,7 +180,6 @@ UFRGS = SiteConfig(
     start_page=1,
     end_page=2667,
     page_step=1,
-    rss_url=None,
     content_selector=(
         ".box-text-blog > h1, .box-text-blog > small.date, "
         ".box-text-blog > img.full-img-article, "
@@ -178,7 +202,6 @@ UFPA = SiteConfig(
     start_page=1,
     end_page=809,
     page_step=1,
-    rss_url=None,
     content_selector=(
         ".elementor-location-single .elementor-element-27a903d, "
         ".elementor-location-single .elementor-element-8e06085, "
@@ -211,7 +234,6 @@ UFPR = SiteConfig(
     start_page=1,
     end_page=2170,
     page_step=1,
-    rss_url=None,
     content_selector=".single__post__text",
     title_selector=".single__post__title h1",
     author_selector=(
@@ -234,7 +256,6 @@ UFRJ = SiteConfig(
     start_page=1,
     end_page=1789,
     page_step=1,
-    rss_url=None,
     content_selector="article .entry-content",
     title_selector="article .entry-title",
     subtitle_selector="article .intro-text",
@@ -252,7 +273,6 @@ UERJ = SiteConfig(
     start_page=1,
     end_page=139,
     page_step=1,
-    rss_url=None,
     content_selector="main#main .entry-content",
     title_selector="main#main .entry-title",
     author_selector="main#main .entry-autor",
@@ -268,7 +288,6 @@ UFABC = SiteConfig(
     start_page=0,
     end_page=2080,
     page_step=10,
-    rss_url=None,
     content_selector=".item-page",
     title_selector=".item-page .documentFirstHeading",
     author_selector=".item-page > p:last-of-type",
@@ -284,11 +303,11 @@ UFMG = SiteConfig(
     paginated_url=(
         "https://www.ufmg.br/comunicacao/noticias/?secao=todas-as-noticias&pagina={page}"
     ),
-    listing_selector="main#primary > div.space-y-10.py-4 > a[href]",
+    # Redesigned in 2026: the list is now ul > li > a.
+    listing_selector='main#primary ul > li > a[href*="/comunicacao/noticias/"]',
     start_page=1,
     end_page=259,
     page_step=1,
-    rss_url=None,
     content_selector="main#primary > div.space-y-8",
     title_selector="main#primary > div.space-y-4 h1:not(.sr-only)",
     subtitle_selector="main#primary > div.space-y-4 > p",
@@ -309,7 +328,6 @@ UFLA = SiteConfig(
     start_page=0,
     end_page=4032,
     page_step=12,
-    rss_url=None,
     content_selector="main#conteudo-principal .item-page",
     title_selector="main#conteudo-principal .item-page .documentFirstHeading",
     author_selector="main#conteudo-principal .item-page .documentAuthor strong",
@@ -326,7 +344,6 @@ UNICAMP = SiteConfig(
     start_page=1,
     end_page=59,
     page_step=1,
-    rss_url=None,
     content_selector="main#conteudo-principal .single-post__post-content",
     title_selector="main#conteudo-principal .single-post__post-title__text",
     subtitle_selector="main#conteudo-principal .single-post__excerpt__text",
@@ -348,7 +365,6 @@ UNIFESP = SiteConfig(
     start_page=0,
     end_page=432,
     page_step=4,
-    rss_url=None,
     content_selector="main#g-main .com-content-article__body",
     title_selector="main#g-main .page-header h1",
     subtitle_selector="main#g-main .unifesp-article-introtext",
@@ -367,7 +383,6 @@ UEM = SiteConfig(
     start_page=0,
     end_page=345,
     page_step=15,
-    rss_url=None,
     content_selector="#t3-content article.article-content",
     title_selector="#t3-content .article-title",
     subtitle_selector="#t3-content blockquote.article-intro",
@@ -388,7 +403,6 @@ FURG = SiteConfig(
     start_page=0,
     end_page=25780,
     page_step=20,
-    rss_url=None,
     content_selector="article.pagina .pagina__conteudo",
     title_selector="article.pagina .noticia__titulo",
     subtitle_selector="article.pagina .noticia__linha-apoio",
@@ -399,22 +413,32 @@ FURG = SiteConfig(
 
 UFC = SiteConfig(
     name="ufc",
-    base_url="https://agencia.ufc.br/",
-    listing_url="https://agencia.ufc.br/",
-    paginated_url="https://agencia.ufc.br/page/{page}/",
-    listing_selector=(
-        ".main .slide-item > a[href], .main .card .content .title a[href]"
-    ),
+    base_url="https://ufcinforma.ufc.br/",
+    listing_url="https://ufcinforma.ufc.br/pt/marcador/noticias",
+    paginated_url="https://ufcinforma.ufc.br/pt/marcador/noticias?pagina={page}",
+    listing_selector='main#content a[href*="/pt/noticias/"]',
     start_page=1,
-    end_page=56,
+    end_page=17,
     page_step=1,
-    rss_url=None,
-    content_selector=".article .post-text",
-    title_selector=".article .header h1",
-    subtitle_selector=".article .header > p",
-    author_selector=".article .info .author",
-    date_selector=".article .info .date",
-    tags_selector=".article .header > a",
+    content_selector="main#content #page, .article .post-text",
+    title_selector=(
+        "main#content > .container > .mb-4 h2, .article .header h1"
+    ),
+    subtitle_selector=(
+        "main#content > .container > .mb-4 > p.mt-4, .article .header > p"
+    ),
+    author_selector=(
+        "main#content > .container > div.flex > div.text-sm .font-semibold, "
+        ".article .info .author"
+    ),
+    date_selector=(
+        "main#content > .container > div.flex > div.text-sm > div:first-child, "
+        ".article .info .date"
+    ),
+    tags_selector=(
+        'main#content #page > ul a[href*="/pt/marcador/"], '
+        ".article .header > a"
+    ),
 )
 
 UFT = SiteConfig(
@@ -426,7 +450,6 @@ UFT = SiteConfig(
     start_page=1,
     end_page=43,
     page_step=1,
-    rss_url=None,
     content_selector=(
         "#page-document > div:first-of-type > div:first-of-type, "
         "#page-document > p, #page-document > h3, .tags-container"
@@ -436,6 +459,22 @@ UFT = SiteConfig(
     author_selector="#page-document .title-metadados .title-txt > span:first-of-type",
     date_selector="#page-document .title-metadados .title-txt > span:nth-of-type(2)",
     tags_selector=".tags-container a.tags-metadados",
+)
+
+UFAM = SiteConfig(
+    name="ufam",
+    base_url="https://www.ufam.edu.br/",
+    listing_url="https://www.ufam.edu.br/noticias.html",
+    paginated_url="https://www.ufam.edu.br/noticias.html?start={page}",
+    listing_selector='form#adminForm .tileItem h2.tileHeadline a[href*="/noticias/"]',
+    start_page=0,
+    end_page=2150,
+    page_step=10,
+    content_selector=".item-page",
+    title_selector=".item-page h1.documentFirstHeading",
+    author_selector=".item-page .documentAuthor strong",
+    date_selector=".item-page .documentPublished",
+    tags_selector=".item-page .tags a",
 )
 
 SITES: dict[str, SiteConfig] = {
@@ -460,11 +499,13 @@ SITES: dict[str, SiteConfig] = {
         FURG,
         UFC,
         UFT,
+        UFAM,
     )
 }
 
 # Geographic region of each monitored university's main campus.
 SITE_REGIONS = {
+    "ufam": "Norte",
     "ufpa": "Norte",
     "ufal": "Nordeste",
     "unb": "Centro-Oeste",

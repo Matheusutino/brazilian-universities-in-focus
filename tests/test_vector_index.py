@@ -155,3 +155,61 @@ def test_lancedb_index_is_incremental_and_removes_stale_articles(tmp_path) -> No
     assert first.duplicate_urls_removed == 0
     assert (second.indexed, second.skipped, second.removed) == (0, 2, 0)
     assert (third.indexed, third.skipped, third.removed) == (0, 1, 1)
+
+
+def test_embedder_never_runs_the_model_concurrently() -> None:
+    import threading
+    import time
+
+    from university_news.search.embeddings import QwenGGUFEmbedder
+
+    class ConcurrencyDetector:
+        def __init__(self):
+            self.active = 0
+            self.maximum = 0
+            self.guard = threading.Lock()
+
+        def tokenize(self, text, **_kwargs):
+            return list(text)
+
+        def embed(self, input, **_kwargs):
+            with self.guard:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            time.sleep(0.01)
+            with self.guard:
+                self.active -= 1
+            return [[0.0] for _ in input]
+
+    backend = ConcurrencyDetector()
+    embedder = QwenGGUFEmbedder(backend=backend, context_length=10_000)
+    threads = [
+        threading.Thread(target=embedder.encode_query, args=(f"consulta {number}",))
+        for number in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert backend.maximum == 1
+
+
+def test_compact_table_merges_fragments_and_drops_old_versions(tmp_path) -> None:
+    from datetime import timedelta
+
+    import lancedb
+
+    from university_news.search.vector_index import compact_table
+
+    table = lancedb.connect(tmp_path).create_table(
+        "articles", data=[{"article_id": "0", "vector": [0.0, 1.0]}]
+    )
+    for number in range(1, 6):
+        table.add([{"article_id": str(number), "vector": [1.0, float(number)]}])
+    assert len(table.list_versions()) == 6
+
+    compact_table(table, keep_versions_for=timedelta(0))
+
+    assert table.count_rows() == 6
+    assert len(table.list_versions()) == 1

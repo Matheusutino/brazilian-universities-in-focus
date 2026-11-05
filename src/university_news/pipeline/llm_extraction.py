@@ -6,6 +6,7 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ..settings import config_value
 
 DEFAULT_OPENROUTER_MODEL = "openrouter/owl-alpha"
 
@@ -68,7 +69,9 @@ class LLMArticleExtractor:
         api_key = self.api_key or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is not set in .env")
-        model = self.model or os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
+        model = self.model or str(
+            config_value("openrouter", "model", default=DEFAULT_OPENROUTER_MODEL)
+        )
         provider = model if model.startswith("openrouter/") else f"openrouter/{model}"
 
         from crawl4ai import LLMConfig, LLMExtractionStrategy

@@ -1,0 +1,17 @@
+[Unit]
+Description=University news LLM enrichment worker (%i)
+After=network-online.target postgresql.service university-news-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# SIGTERM lets in-flight requests finish; the run is recorded as interrupted.
+TimeoutStopSec=330
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStart=__UV__ run university-news-worker --stages enrich --provider %i
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

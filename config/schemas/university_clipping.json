@@ -1,0 +1,81 @@
+{
+  "schema_version": "2.1.0",
+
+  "document": {
+    "document_id": "string",
+    "url": "string",
+    "source_university": "string",
+    "title": "string",
+    "subtitle": "string|null",
+    "author": "string|null",
+    "publication_date": "YYYY-MM-DD|null"
+  },
+
+  "summary": {
+    "one_sentence": "string",
+    "abstract": "string"
+  },
+
+  "classification": {
+    "content_type": "noticia|reportagem|entrevista|opiniao|agenda|comunicado|outro",
+    "institutional_axes": [
+      "ensino|pesquisa|extensao|inovacao|gestao|internacionalizacao|cultura|assistencia_estudantil|outro"
+    ],
+    "news_category": "resultado_de_pesquisa|projeto_de_pesquisa|evento|premiacao|oportunidade|parceria|divulgacao_cientifica|posicionamento_de_especialista|institucional|outro",
+    "scientific_content": "central|relevant|peripheral|absent"
+  },
+
+  "topics": {
+    "main_topic": "string",
+    "scientific_fields": [
+      "ciencias_exatas_e_da_terra|ciencias_biologicas|engenharias|ciencias_da_saude|ciencias_agrarias|ciencias_sociais_aplicadas|ciencias_humanas|linguistica_letras_e_artes|multidisciplinar"
+    ],
+    "keywords": ["string"]
+  },
+
+  "entities": [
+    {
+      "name": "string",
+      "type": "person|university|research_group|company|government_agency|funding_agency|other",
+      "role": "researcher|student|expert|author|organizer|partner|funder|other",
+      "affiliation": "string|null"
+    }
+  ],
+
+  "context": {
+    "locations": ["string"],
+    "geographic_scope": "local|regional|national|international|indeterminate",
+    "event_date": "YYYY-MM-DD|null"
+  },
+
+  "research": {
+    "present": true,
+    "stage": "proposal|in_progress|preliminary_results|completed|not_applicable",
+    "findings": ["string"],
+    "funding_agencies": ["string"],
+    "collaboration_types": [
+      "inter_university|government|industry|civil_society|international"
+    ]
+  },
+
+  "societal_impact": {
+    "dimensions": [
+      "health|education|environment|economy|technology|culture|social|public_policy"
+    ],
+    "beneficiaries": ["string"],
+    "sdgs": [4]
+  },
+
+  "communication": {
+    "audience": "general_public|scientific_community|students|government|industry|other",
+    "tone": "informative|promotional|educational|celebratory|critical|neutral",
+    "accessibility_0_4": 0,
+    "scientific_depth_0_4": 0,
+    "hype": "none|low|medium|high"
+  },
+
+  "quality": {
+    "analysis_status": "complete|partial|insufficient_content",
+    "requires_human_review": false
+  }
+}

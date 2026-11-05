@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "macros.html" import stats_strip, tag %}
+{% block title %}Universidades · Universidades em Foco{% endblock %}
+{% block content %}
+<section class="page-intro">
+  <div class="eyebrow">Cobertura do acervo</div>
+  <h1 class="page-title">Universidades</h1>
+  <p>Veja quanto conteúdo foi reunido de cada instituição, o período disponível e quantas notícias já foram analisadas.</p>
+</section>
+{{ stats_strip([
+  (stats.universities | length, "universidades"),
+  (stats.regions | length, "regiões"),
+  (stats.articles | count, "notícias"),
+]) }}
+<div class="segmented" id="region-filter" role="group" aria-label="Filtrar por região">
+  <button type="button" data-region="" aria-pressed="true">Todas</button>
+  {% for region in stats.regions %}<button type="button" data-region="{{ region }}" aria-pressed="false">{{ region }}</button>{% endfor %}
+</div>
+{% set largest = stats.universities | map(attribute="news") | max %}
+<div class="uni-grid">
+  {% for item in stats.universities %}
+  <a class="uni-card" href="/explorar/?university={{ item.journal }}" data-region="{{ item.region }}" style="text-decoration:none;color:inherit">
+    <div class="uni-id">
+      {% if item.journal | has_logo %}
+      <span class="uni-logo"><img src="/static/logos/{{ item.journal | lower }}.png" alt="Logo {{ item.journal }}" width="48" height="48" loading="lazy"></span>
+      {% else %}
+      <span class="uni-logo initials">{{ item.journal[:2] }}</span>
+      {% endif %}
+      <div class="uni-heading"><span class="uni-name">{{ item.journal }}</span>{{ tag(item.region, item.region) }}</div>
+    </div>
+    <div class="uni-count">{{ item.news | count }} <small>notícias</small></div>
+    <div class="uni-bar"><span style="width:{{ [item.news / largest * 100, 1.5] | max | round(1) }}%"></span></div>
+    <div class="uni-range">{{ item.earliest | month_year }} – {{ item.latest | month_year }}{% if item.annotated %} · {{ item.annotated | count }} analisadas{% endif %}</div>
+  </a>
+  {% endfor %}
+</div>
+<p class="chart-note">Logos e brasões são marcas das respectivas universidades, exibidos apenas para identificação. Fontes: Wikimedia Commons e Wikipédia; autor e licença de cada arquivo em <a href="/static/logos/CREDITS.json">CREDITS.json</a>.</p>
+{% endblock %}
+{% block scripts %}<script src="/static/js/universities.js?v={{ version }}" defer></script>{% endblock %}

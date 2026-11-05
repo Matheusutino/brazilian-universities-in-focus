@@ -15,7 +15,10 @@ from .sources.catalog import SITES
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="university-news",
-        description="Collect and extract news from university websites.",
+        description=(
+            "Offline file-based collection. For direct PostgreSQL ingestion use "
+            "university-news-daily and university-news-worker."
+        ),
     )
     parser.add_argument("site", choices=sorted(SITES), help="Target site")
     parser.add_argument(

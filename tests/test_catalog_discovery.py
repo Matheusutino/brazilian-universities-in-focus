@@ -2,6 +2,9 @@ import httpx
 
 from university_news.sources.catalog import (
     UFAL,
+    UFAM,
+    SITES,
+    region_for_site,
     UFMS,
     UFPA,
     UFPR,
@@ -22,6 +25,40 @@ from university_news.sources.catalog import (
     USP,
 )
 from university_news.pipeline.discovery import UrlDiscovery
+
+
+async def test_ufam_offset_discovery_and_registration() -> None:
+    assert SITES["ufam"] is UFAM
+    assert region_for_site("ufam") == "Norte"
+    assert UFAM.page_url(0) == "https://www.ufam.edu.br/noticias.html"
+    assert UFAM.page_url(2150).endswith("?start=2150")
+    assert len(UFAM.page_values(0, 2150)) == 216
+    offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("start", "0"))
+        offsets.append(offset)
+        return httpx.Response(200, text=f"""
+          <form id="adminForm"><div class="tileItem">
+            <h2 class="tileHeadline">
+              <a href="/noticias/{offset}-pesquisa.html">Pesquisa</a>
+              <a href="/noticias/{offset}-pesquisa.html#texto">Repetida</a>
+              <a href="https://outro.edu.br/noticias/fora.html">Externa</a>
+            </h2>
+          </div><a href="/noticias.html?start=20">Próxima</a></form>
+          <footer><a href="/noticias/fora.html">Fora da listagem</a></footer>
+        """)
+
+    result = await UrlDiscovery(
+        UFAM, transport=httpx.MockTransport(handler)
+    ).discover(0, 20)
+
+    assert sorted(offsets) == [0, 10, 20]
+    assert result.errors == []
+    assert result.urls == {
+        f"https://www.ufam.edu.br/noticias/{offset}-pesquisa.html"
+        for offset in (0, 10, 20)
+    }
 
 
 def test_usp_page_urls() -> None:
@@ -157,9 +194,11 @@ def test_ufmg_page_urls_and_listing_selector() -> None:
 
     html = """
     <main id="primary">
-      <div class="space-y-10 py-4"><a href="/comunicacao/noticias/categoria/materia-1/">Matéria 1</a></div>
-      <div class="space-y-10 py-4"><a href="/comunicacao/noticias/categoria/materia-2/">Matéria 2</a></div>
-      <div class="mx-auto"><a class="page-numbers" href="?pagina=3">3</a></div>
+      <ul class="py-4">
+        <li><a class="flex" href="/comunicacao/noticias/categoria/materia-1/">Matéria 1</a></li>
+        <li><a class="flex" href="/comunicacao/noticias/categoria/materia-2/">Matéria 2</a></li>
+      </ul>
+      <nav><ul><li><a class="page-numbers" href="?pagina=3">3</a></li></ul></nav>
     </main>
     """
     assert UrlDiscovery(UFMG).parse_urls(html, UFMG.page_url(2)) == {
@@ -267,24 +306,24 @@ def test_furg_offset_urls_and_listing_selector() -> None:
 
 
 def test_ufc_page_urls_and_listing_selector() -> None:
-    assert UFC.page_url(1) == "https://agencia.ufc.br/"
-    assert UFC.page_url(2) == "https://agencia.ufc.br/page/2/"
-    assert UFC.page_url(56) == "https://agencia.ufc.br/page/56/"
+    assert UFC.page_url(1) == "https://ufcinforma.ufc.br/pt/marcador/noticias"
+    assert UFC.page_url(2) == (
+        "https://ufcinforma.ufc.br/pt/marcador/noticias?pagina=2"
+    )
+    assert UFC.page_url(17).endswith("?pagina=17")
 
     html = """
-    <div class="main">
-      <div class="slide-item"><a href="/materia-destaque/"><img></a></div>
-      <div class="card"><div class="content"><p class="title">
-        <a href="/materia-1/">Matéria 1</a>
-      </p></div></div>
-      <div class="card"><div class="content"><p class="category">
-        <a href="/category/saude/">Saúde</a>
-      </p></div></div>
-    </div>
+    <main id="content">
+      <a href="/pt/noticias/materia-destaque"><img></a>
+      <a href="https://ufcinforma.ufc.br/pt/noticias/materia-1">Matéria 1</a>
+      <a href="/pt/noticias/materia-1#texto">Matéria 1 repetida</a>
+      <a href="/pt/marcador/noticias?pagina=3">Próxima</a>
+    </main>
+    <footer><a href="/pt/noticias/fora-da-listagem">Fora</a></footer>
     """
     assert UrlDiscovery(UFC).parse_urls(html, UFC.page_url(2)) == {
-        "https://agencia.ufc.br/materia-destaque/",
-        "https://agencia.ufc.br/materia-1/",
+        "https://ufcinforma.ufc.br/pt/noticias/materia-destaque",
+        "https://ufcinforma.ufc.br/pt/noticias/materia-1",
     }
 
 
@@ -490,3 +529,72 @@ async def test_discovery_retries_transient_status_but_not_404() -> None:
     assert len(result.errors) == 1
     assert attempts["/todas-as-noticias/page/2/"] == 2
     assert attempts["/todas-as-noticias/page/3/"] == 1
+
+
+def test_ufal_2026_listing_without_title_class() -> None:
+    html = """
+    <div id="content-core">
+      <a href="https://noticias.ufal.br/estudante/noticias/2026/11/selecao-de-vagas">Leia mais</a>
+      <a href="https://noticias.ufal.br/transparencia/noticias/2026/11/circuito-de-cinema">Leia mais</a>
+      <a href="https://sistemas.ufal.br/cas/login">Entrar</a>
+      <a href="/?b_start:int=30">Próxima</a>
+    </div>
+    """
+
+    assert UrlDiscovery(UFAL).parse_urls(html, UFAL.page_url(0)) == {
+        "https://noticias.ufal.br/estudante/noticias/2026/11/selecao-de-vagas",
+        "https://noticias.ufal.br/transparencia/noticias/2026/11/circuito-de-cinema",
+    }
+
+
+def test_tls_context_completes_chains_with_bundled_intermediates() -> None:
+    from university_news.shared.http_client import EXTRA_CERTIFICATES, tls_context
+
+    subjects = {
+        dict(item[0] for item in cert["subject"]).get("commonName")
+        for cert in tls_context().get_ca_certs()
+    }
+
+    assert any(EXTRA_CERTIFICATES.glob("*.pem"))
+    assert "RNP ICPEdu GR46 OV TLS CA 2025" in subjects
+
+
+def test_usp_lists_through_the_wordpress_api() -> None:
+    from datetime import date
+
+    from university_news.sources.catalog import USP
+
+    url = USP.wordpress_page_url("posts", 3, after=date(2026, 7, 10))
+
+    assert url.startswith("https://jornal.usp.br/wp-json/wp/v2/posts?")
+    assert "per_page=100" in url and "page=3" in url
+    assert "after=2026-07-10T00%3A00%3A00" in url
+    assert USP.wordpress_types == ("posts", "podcast")
+
+
+async def test_wordpress_discovery_reads_links_and_detects_the_last_page() -> None:
+    from university_news.sources.catalog import USP
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page == 3:
+            return httpx.Response(400, request=request, json={"code": "rest_post_invalid_page_number"})
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"X-WP-TotalPages": "2"},
+            json=[
+                {"link": f"https://jornal.usp.br/ciencias/noticia-{page}/", "date": "2026-07-11T10:00:00"},
+                {"link": "https://outro-site.br/fora/", "date": "2026-07-11T10:00:00"},
+            ],
+        )
+
+    discovery = UrlDiscovery(USP, transport=httpx.MockTransport(handler), retry_multiplier=0)
+    first = await discovery.discover_wordpress("posts", 1)
+    last = await discovery.discover_wordpress("posts", 2)
+    beyond = await discovery.discover_wordpress("posts", 3)
+
+    assert first.urls == {"https://jornal.usp.br/ciencias/noticia-1/"}
+    assert not first.exhausted
+    assert last.exhausted
+    assert beyond.exhausted and beyond.errors == []
