@@ -10,7 +10,8 @@ Application code lives in `src/university_news/`. Key packages are `pipeline/` f
 - `uv run pytest`: run the complete test suite.
 - `uv run pytest tests/test_fetching.py -q`: run one focused test module.
 - `TEST_DATABASE_URL=... uv run pytest tests/test_postgres_store.py tests/test_site.py`: run integration tests against dedicated PostgreSQL with pg_search 0.26.4+ (the database is wiped).
-- `uv run university-news usp --stage all`: collect and extract one configured university.
+- `uv run university-news-daily --sites usp`: discover and queue one university.
+- `uv run university-news-worker --stages fetch extract preprocess --exit-when-empty`: process queued articles into PostgreSQL.
 - `uv run university-news-preprocess --data-root data --workers 8`: clean and compile collected articles.
 - `uv run university-news-site build && uv run university-news-site serve`: build and serve the website locally.
 - `uv run university-news-site init-search`: apply migrations and create BM25 indexes using `DATABASE_URL`; the server must have pg_search preloaded.

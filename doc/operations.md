@@ -31,7 +31,7 @@ Migration 5 adds HTML content to `raw_documents`. It preserves legacy path-only
 rows but does not read or import local files. Such documents must be fetched
 again before extraction; existing extracted articles remain available. For a
 fresh collection, simply initialize the schema and run discovery/workers above.
-The optional offline file commands remain available for research.
+The optional preprocessing and enrichment file commands remain available for research.
 
 ### Optional historical import
 
@@ -84,12 +84,15 @@ Historical work and retries are always explicit:
 uv run university-news-db enqueue-backfill --stage enrich --limit 100
 uv run university-news-db enqueue-backfill --stage embed --limit 100
 uv run university-news-db retry --stage enrich
+uv run university-news-db retry --stage fetch --site ufam --limit 5
 uv run university-news-db status
 ```
 
 `status` reports queue totals, accepted and rejected article totals, the ten
 most recent runs, and the twenty most recent errors. `retry` resets the
-attempt counter for the selected failed jobs. Status and backfill output also
+attempt counter for the selected failed jobs. Without `--site` or `--limit`,
+it affects every failure matching the stage; use a small limit to verify a
+repair before requeueing the rest. Status and backfill output also
 estimate LLM calls and ETA from measured runtimes.
 
 The enrichment worker uses the selected provider's `workers` setting, falling
@@ -110,7 +113,7 @@ sudo loginctl enable-linger "$USER"
 
 This installs daily discovery, an hourly static-page build, a core worker, one
 enrichment worker per provider in `[enrichment].providers`
-(`university-news-enrichment-worker@<provider>`), a GPU embedding worker, and
+(`university-news-enrichment-worker@<provider>`), an embedding worker, and
 the website (`university-news-site`), and a daily database backup to
 `data/backups/` (`university-news-backup.timer`). Providers removed from
 `[enrichment].providers` are disabled on the next install. The hourly publish run

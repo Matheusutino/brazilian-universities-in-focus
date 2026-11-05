@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..enrichment.agenda import AGENDA_MACROTEMAS
 from .labels import SDG_NAMES, label
 
 # (field key, contract path, title, question it answers, multiple values?, definitions)
@@ -139,21 +140,12 @@ CRITERIA: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "key": "dimensions",
-        "path": "societal_impact.dimensions",
-        "title": "Dimensões de impacto social",
-        "question": "Em que áreas da sociedade a iniciativa pode ter efeito?",
+        "key": "macrotemas",
+        "path": "agenda_nacional.macrotemas",
+        "title": "Macrotemas da Agenda Nacional",
+        "question": "A quais prioridades nacionais a notícia se relaciona? Alinhamento não comprova impacto.",
         "multiple": True,
-        "values": {
-            "health": "Saúde.",
-            "education": "Educação.",
-            "environment": "Meio ambiente.",
-            "economy": "Economia e trabalho.",
-            "technology": "Tecnologia.",
-            "culture": "Cultura.",
-            "social": "Inclusão, direitos e questões sociais.",
-            "public_policy": "Políticas públicas.",
-        },
+        "values": {code: name for code, name in AGENDA_MACROTEMAS.items()},
     },
     {
         "key": "audience",

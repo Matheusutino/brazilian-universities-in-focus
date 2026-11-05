@@ -4,7 +4,7 @@
 <section class="hero">
   <div class="eyebrow">Notícias universitárias brasileiras</div>
   <h1 class="hero-title">Conhecimento público,<br><em>em um só lugar.</em></h1>
-  <p>Uma visão integrada da ciência, da cultura e da sociedade produzida pelas universidades públicas do Brasil, com busca por significado e por palavras-chave.</p>
+  <p>Uma base de notícias universitárias enriquecida com inteligência artificial para explorar a ciência, a cultura e a sociedade — e apoiar decisões mais bem informadas.</p>
 </section>
 <form class="search-bar" action="/explorar/" method="get" role="search">
   <input type="search" name="q" placeholder="Ex.: mudanças climáticas, saúde pública, inteligência artificial…" aria-label="Buscar no acervo">
@@ -21,6 +21,20 @@
   <a class="button" href="/analises/">Ver análises</a>
   <a class="button" href="/universidades/">Conhecer universidades</a>
 </div>
+<section class="decision-panel" aria-labelledby="decision-title">
+  <div class="decision-intro">
+    <div class="eyebrow">Do acervo à análise</div>
+    <h2 id="decision-title">Informação para enxergar mais longe.</h2>
+    <p>Reunimos publicações oficiais e enriquecemos parte delas com temas, áreas científicas e impactos. Uma base para investigar questões, encontrar evidências e apoiar a tomada de decisões.</p>
+    <a href="/analises/">Explorar análises <span aria-hidden="true">→</span></a>
+  </div>
+  <div class="decision-uses">
+    <div><strong>Identifique tendências</strong><span>Acompanhe assuntos e iniciativas ao longo do tempo.</span></div>
+    <div><strong>Compare perspectivas</strong><span>Explore temas entre universidades e regiões.</span></div>
+    <div><strong>Investigue as fontes</strong><span>Parta das análises e acesse a notícia original.</span></div>
+    <p>{{ stats.annotated | count }} notícias analisadas com IA. Resultados automatizados devem ser conferidos nas fontes.</p>
+  </div>
+</section>
 {{ section_head("Publicações recentes", "direto das fontes oficiais") }}
 <div class="card-grid">
   {% for article in latest %}{{ card(article) }}{% endfor %}

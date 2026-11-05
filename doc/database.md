@@ -18,6 +18,23 @@ does not install those extensions; its old PostgreSQL 16.2 binaries need an
 upgrade before using the tested pg_search package. See [site.md](site.md) for
 the website migration and the read-only role.
 
+On the current rootless deployment, PostgreSQL 16.15 and pg_search 0.26.4 are
+installed separately under `data/postgres/pg16-search-0.26.4`. A systemd user
+drop-in selects those binaries and preloads pg_search; the previous 16.2
+installation and a verified pre-upgrade dump remain available. On a new host,
+install compatible server binaries, pgvector and pg_search and preload
+`pg_search` before initializing the site. Creating the extensions requires a
+database superuser even when the app role owns the database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_search;
+```
+
+Then run `uv run university-news-site init-search` as the application role to
+create the BM25 index. Do not run old workers concurrently with a schema or
+server upgrade.
+
 **Without root or Docker access** (the setup used on the lab server):
 
 ```bash

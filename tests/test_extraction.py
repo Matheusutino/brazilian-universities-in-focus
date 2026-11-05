@@ -13,9 +13,6 @@ from university_news.sources.catalog import (
     USP,
 )
 from university_news.pipeline.extraction import StructuredExtractor
-from university_news.pipeline.fetching import ContentFetcher
-from university_news.shared.io import read_jsonl
-from university_news.pipeline.llm_extraction import LLMArticleExtractor
 
 
 def test_ufam_extracts_article_and_publication_metadata(tmp_path) -> None:
@@ -42,8 +39,8 @@ def test_ufam_extracts_article_and_publication_metadata(tmp_path) -> None:
     </body></html>""", encoding="utf-8")
 
     article = StructuredExtractor(
-        tmp_path, tmp_path / "articles.jsonl", site=UFAM
-    ).extract_file(raw_path, url)
+        site=UFAM
+    ).extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Pesquisa sobre inteligência artificial na UFAM"
     assert article["author"] == "ascom.ufam"
@@ -53,138 +50,6 @@ def test_ufam_extracts_article_and_publication_metadata(tmp_path) -> None:
     assert "Navegação do portal" not in article["text"]
     assert "https://www.ufam.edu.br/pesquisa.html" in article["links"]
     assert "https://www.ufam.edu.br/images/pesquisa.jpg" in article["images"]
-
-
-def test_extraction_normalizes_fields_and_resumes(tmp_path, monkeypatch) -> None:
-    url = "https://jornal.usp.br/ciencias/materia/"
-    raw_directory = tmp_path / "raw"
-    raw_directory.mkdir()
-    raw_path = raw_directory / ContentFetcher.filename_for_url(url)
-    raw_path.write_text("<html><article>Texto</article></html>", encoding="utf-8")
-
-    payload = {
-        "title": " Titulo ",
-        "author": None,
-        "date": "2024-01-02",
-        "text": " Conteudo da materia ",
-        "tags": "ciencia; USP; ciencia",
-    }
-
-    def fake_extract(*args, **kwargs):
-        if kwargs["output_format"] == "json":
-            return json.dumps(payload)
-        return """<doc><main>
-          <p>Leia <ref target="/outra/#trecho">outra matéria</ref>.</p>
-          <p><ref target="https://example.com/fonte">Fonte</ref></p>
-          <graphic src="/wp-content/uploads/imagem.jpg" />
-          <graphic src="/wp-content/uploads/imagem.jpg" />
-        </main></doc>"""
-
-    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_extract)
-    articles_path = tmp_path / "articles.jsonl"
-    extractor = StructuredExtractor(raw_directory, articles_path)
-
-    first = extractor.run([url])
-    second = extractor.run([url])
-    article = read_jsonl(articles_path)[0]
-
-    assert first.extracted == 1
-    assert second.skipped == 1
-    assert article == {
-        "url": url,
-        "title": "Titulo",
-        "subtitle": None,
-        "author": None,
-        "date": "2024-01-02",
-        "text": "Conteudo da materia",
-        "tags": ["USP", "ciencia"],
-        "links": [
-            "https://example.com/fonte",
-            "https://jornal.usp.br/outra/",
-        ],
-        "images": ["https://jornal.usp.br/wp-content/uploads/imagem.jpg"],
-    }
-
-
-def test_extraction_records_empty_text_and_missing_html(tmp_path, monkeypatch) -> None:
-    existing_url = "https://jornal.usp.br/vazio/"
-    missing_url = "https://jornal.usp.br/ausente/"
-    raw_directory = tmp_path / "raw"
-    raw_directory.mkdir()
-    (raw_directory / ContentFetcher.filename_for_url(existing_url)).write_text(
-        "<html></html>", encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        "university_news.pipeline.extraction.extract",
-        lambda *args, **kwargs: json.dumps({"title": "Sem texto", "text": ""}),
-    )
-
-    result = StructuredExtractor(raw_directory, tmp_path / "articles.jsonl").run(
-        [existing_url, missing_url]
-    )
-
-    assert result.extracted == 0
-    assert {error["error"] for error in result.errors} == {"ValueError", "HTMLNotFound"}
-
-
-def test_old_articles_schema_requires_force(tmp_path) -> None:
-    articles_path = tmp_path / "articles.jsonl"
-    articles_path.write_text(
-        json.dumps({"url": "https://jornal.usp.br/antiga/", "text": "Texto"}) + "\n",
-        encoding="utf-8",
-    )
-
-    try:
-        StructuredExtractor(tmp_path / "raw", articles_path).run([])
-    except ValueError as exc:
-        assert "--force" in str(exc)
-    else:
-        raise AssertionError("Schema antigo deveria exigir reextracao")
-
-
-def test_hybrid_uses_llm_when_trafilatura_has_no_author(tmp_path, monkeypatch) -> None:
-    url = "https://jornal.usp.br/noticia/"
-    raw_path = tmp_path / "article.html"
-    raw_path.write_text("<main>Notícia</main>", encoding="utf-8")
-
-    def fake_trafilatura(*args, **kwargs):
-        if kwargs["output_format"] == "json":
-            return json.dumps(
-                {
-                    "title": "Título",
-                    "author": None,
-                    "date": "2026-01-02",
-                    "text": "x" * 300,
-                }
-            )
-        return "<doc><main><p>Texto</p></main></doc>"
-
-    class HybridStrategy:
-        def run(self, received_url, sections):
-            return [
-                {
-                    "title": "Título",
-                    "author": "Autora recuperada",
-                    "date": "2026-01-02",
-                    "text": "Texto extraído pela LLM",
-                    "tags": [],
-                    "links": [],
-                    "images": [],
-                }
-            ]
-
-    monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
-    extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="hybrid",
-        llm_extractor=LLMArticleExtractor(strategy=HybridStrategy()),
-    )
-
-    article = extractor.extract_file(raw_path, url)
-
-    assert article["author"] == "Autora recuperada"
-    assert article["text"] == "Texto extraído pela LLM"
 
 
 def test_usp_column_author_is_derived_from_url(tmp_path, monkeypatch) -> None:
@@ -213,42 +78,10 @@ def test_usp_column_author_is_derived_from_url(tmp_path, monkeypatch) -> None:
     )
 
     article = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
         site=USP,
-    ).extract_file(raw_path, url)
+    ).extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["author"] == "Alecsandra Matias de Oliveira"
-
-
-def test_usp_column_profile_pages_are_not_extracted(tmp_path, monkeypatch) -> None:
-    url = "https://jornal.usp.br/articulista/alecsandra-matias-de-oliveira/"
-    raw_directory = tmp_path / "raw"
-    raw_directory.mkdir()
-    (raw_directory / ContentFetcher.filename_for_url(url)).write_text(
-        "<main>Perfil da articulista</main>",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "university_news.pipeline.extraction.extract",
-        lambda *args, **kwargs: json.dumps(
-            {
-                "title": "Alecsandra Matias de Oliveira",
-                "text": "Perfil e lista de artigos publicados.",
-            }
-        ),
-    )
-
-    articles_path = tmp_path / "articles.jsonl"
-    result = StructuredExtractor(
-        raw_directory,
-        articles_path,
-        site=USP,
-    ).run([url])
-
-    assert result.extracted == 0
-    assert result.skipped == 1
-    assert not articles_path.exists()
 
 
 def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> None:
@@ -279,13 +112,10 @@ def test_ufal_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFAL,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["subtitle"] == "Subtítulo da matéria da Ufal"
     assert article["author"] == "Maria Silva – jornalista"
@@ -320,11 +150,8 @@ def test_uft_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     article = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFT,
-    ).extract_file(raw_path, url)
+    ).extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UFT"
     assert article["subtitle"] == "Resumo UFT"
@@ -372,11 +199,8 @@ def test_ufc_informa_metadata_is_enriched_from_stable_html(
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     article = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFC,
-    ).extract_file(raw_path, url)
+    ).extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UFC Informa"
     assert article["subtitle"] == "Subtítulo da matéria"
@@ -416,13 +240,10 @@ def test_unesp_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UNESP,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["subtitle"] == "Subtítulo da matéria"
     assert article["author"] == "Leandro Rocha"
@@ -462,13 +283,10 @@ def test_unb_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UNB,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UnB"
     assert article["subtitle"] == "Subtítulo da matéria da UnB"
@@ -513,13 +331,10 @@ def test_ufms_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFMS,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UFMS"
     assert article["subtitle"] is None
@@ -561,13 +376,10 @@ def test_ufrgs_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFRGS,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UFRGS"
     assert article["subtitle"] == "Subtítulo da matéria da UFRGS"
@@ -622,13 +434,10 @@ def test_ufpa_metadata_is_enriched_from_stable_html(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr("university_news.pipeline.extraction.extract", fake_trafilatura)
     extractor = StructuredExtractor(
-        tmp_path,
-        tmp_path / "articles.jsonl",
-        mode="trafilatura",
         site=UFPA,
     )
 
-    article = extractor.extract_file(raw_path, url)
+    article = extractor.extract_html(raw_path.read_text(encoding="utf-8"), url)
 
     assert article["title"] == "Título UFPA"
     assert article["author"] == "Orlando Haber e Aymê Vitória/Ascom Prointer"

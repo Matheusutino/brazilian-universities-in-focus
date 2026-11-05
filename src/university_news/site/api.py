@@ -48,6 +48,11 @@ def monitor_semantic_search(
             report = runtime.probe(
                 resolve=lambda ids: index._matching_rows(ids, ArticleQuery())
             )
+            published = index.published_count()
+            report["published_articles"] = published
+            report["coverage_estimate"] = (
+                min(report["rows"] / published, 1.0) if published else None
+            )
             if stop.is_set():
                 return
             if report["ready"]:
@@ -128,9 +133,13 @@ def create_app(
             return JSONResponse({"ok": False, "database": False}, status_code=503)
         status = semantic_health.snapshot()
         ready = status["ready"]
+        coverage = status.get("coverage_estimate")
         return JSONResponse({
             "ok": True, "database": True, "semantic": ready,
-            "degraded": status["enabled"] and (not ready or not status.get("efficient", True)),
+            "degraded": status["enabled"] and (
+                not ready or not status.get("efficient", True)
+                or (coverage is not None and coverage < 1)
+            ),
             "semantic_status": status,
         })
 

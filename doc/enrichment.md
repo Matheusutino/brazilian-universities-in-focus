@@ -1,7 +1,7 @@
 # LLM enrichment
 
 Enrichment adds a compact set of analytical metadata to each article. The
-contract lives in `config/schemas/university_clipping.json` (version 2.1.0).
+contract lives in `config/schemas/university_clipping.json` (version 3.0.0).
 
 ## Contract
 
@@ -14,7 +14,9 @@ contract lives in `config/schemas/university_clipping.json` (version 2.1.0).
 | `entities` | name, type, role, affiliation | model |
 | `context` | locations, geographic scope, event date | model |
 | `research` | presence, stage, findings, funding agencies, collaboration types | model |
-| `societal_impact` | impact dimensions, beneficiaries, SDGs | model |
+| `five_w_one_h` | compact what, who, when, where, why, how; null when absent | model |
+| `agenda_nacional` | zero or more national strategic macrotheme codes (M1–M20) | model |
+| `societal_impact` | beneficiaries, SDGs | model |
 | `communication` | audience, tone, accessibility (0–4), scientific depth (0–4), hype | model |
 | `quality` | analysis status, human-review flag | model |
 
@@ -22,14 +24,22 @@ The fields serve the analyses the corpus is meant to support: classification,
 tone and bias, trends by topic, region, and time, and search. Metadata already
 known from extraction is filled by code and never requested from the model.
 
+The macrothemes follow the [Agenda Nacional observatory](https://agendanacional.ufms.br/).
+They represent a model-generated thematic association, not evidence of actual
+social impact. State-specific topics are not yet classified. The former impact
+dimensions were removed; beneficiaries and SDGs remain separate. The 5W1H event
+time must not be inferred from publication date. Existing annotations retain
+their original contract and require explicit re-enrichment to obtain new fields.
+Compare cost and quality on a sample before a backfill.
+
 Every field is required. Options separated by `|` become enums, `|null` makes
 a field nullable, `YYYY-MM-DD` is validated as a date, `sdgs` must be between
 1 and 17, and fields ending in `_0_4` must be between 0 and 4.
 
 ### Changing the contract
 
-1. Edit the JSON file and bump `schema_version`. Annotations are stored per
-   version in `data/enriched/clipping/v<version>/`, so versions never mix.
+1. Edit the JSON file and bump `schema_version`. Database annotations retain
+   their versioned profiles; offline experiments use versioned directories.
 2. If you add or rename a model section, update `_SECTION_BUNDLES` in
    `enrichment/client.py` so that each section belongs to exactly one bundle.
    `test_section_groups_cover_every_model_section_once` checks this.
@@ -37,7 +47,8 @@ a field nullable, `YYYY-MM-DD` is validated as a date, `sdgs` must be between
 Version 1.0.0 had 376 fields: 5W1H, 11 metric scores, claims, an evidence
 system with cross-referenced IDs, and per-item confidence. On three test
 articles it needed about 155 s and 14,700 output tokens per article, spread
-over three calls. Version 2 keeps only the fields listed above.
+over three calls. Version 3 restores only the six compact 5W1H answers, not that
+evidence system.
 
 ## Providers, keys, and rate limits
 
@@ -120,7 +131,7 @@ publishes them to `data/enriched/profiles/<profile>/` as JSONL, a flat Parquet
 table, and a checksummed manifest. The experimental JSONL command writes:
 
 ```text
-data/enriched/clipping/v2.1.0/
+data/enriched/clipping/v3.0.0/
 ├── annotations.jsonl   # validated records
 ├── errors.jsonl        # failures with elapsed time
 └── manifest.json       # latest run summary

@@ -65,10 +65,13 @@ def contract_to_json_schema(value: Any, field_name: str = "") -> dict[str, Any]:
     if isinstance(value, list):
         if not value:
             return {"type": "array"}
-        return {
+        result = {
             "type": "array",
             "items": contract_to_json_schema(value[0], field_name),
         }
+        if field_name == "macrotemas":
+            result["uniqueItems"] = True
+        return result
     if isinstance(value, bool):
         return {"type": "boolean"}
     if isinstance(value, int):

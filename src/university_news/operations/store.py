@@ -433,19 +433,31 @@ class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
             row = cursor.fetchone()
         return int(row["jobs"]) if row else 0
 
-    def retry_failed(self, stage: str | None = None) -> int:
+    def retry_failed(
+        self, stage: str | None = None, *, site: str | None = None, limit: int | None = None
+    ) -> int:
+        if stage:
+            self._validate_stages([stage])
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be at least 1")
         with self.connection.transaction(), self.connection.cursor() as cursor:
-            query = """
-                UPDATE processing_jobs SET status = 'queued', available_at = now(),
-                    attempts = 0, finished_at = NULL, last_error = NULL
-                WHERE status = 'failed'
-            """
-            params: tuple[Any, ...] = ()
-            if stage:
-                self._validate_stages([stage])
-                query += " AND stage = %s"
-                params = (stage,)
-            cursor.execute(query, params)
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT id FROM processing_jobs
+                    WHERE status = 'failed'
+                      AND (%s::text IS NULL OR stage = %s)
+                      AND (%s::text IS NULL OR site = %s)
+                    ORDER BY id FOR UPDATE SKIP LOCKED LIMIT %s
+                )
+                UPDATE processing_jobs AS job
+                SET status = 'queued', available_at = now(), attempts = 0,
+                    finished_at = NULL, last_error = NULL, worker_id = NULL,
+                    lease_expires_at = NULL, lease_token = NULL
+                FROM candidates WHERE job.id = candidates.id
+                """,
+                (stage, stage, site, site, limit),
+            )
             return cursor.rowcount
 
     @staticmethod

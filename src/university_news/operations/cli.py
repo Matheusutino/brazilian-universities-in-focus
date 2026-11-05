@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     retry = subparsers.add_parser("retry", help="Requeue failed jobs explicitly")
     retry.add_argument("--stage", choices=JOB_STAGES)
+    retry.add_argument("--site", choices=sorted(SITES), help="Limit to one university")
+    retry.add_argument("--limit", type=int, help="Maximum number of jobs to requeue")
 
     backfill = subparsers.add_parser(
         "enqueue-backfill", help="Explicitly enqueue historical enrichment or indexing"
@@ -80,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--reannotate",
         action="store_true",
         help="Also requeue articles annotated by other profiles, to compare them",
+    )
+    backfill.add_argument(
+        "--reindex", action="store_true",
+        help="Also requeue completed or failed embedding jobs for a new index",
     )
     backfill.add_argument(
         "--provider",
@@ -193,8 +199,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     if not dsn:
         print("Database command failed: DATABASE_URL is not set in .env")
         return 1
-    if args.command in {"enqueue-backfill", "errors"} and args.limit is not None and args.limit < 1:
+    if args.command in {"enqueue-backfill", "errors", "retry"} and args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.command == "enqueue-backfill" and args.reindex and args.stage != "embed":
+        parser.error("--reindex requires --stage embed")
     store = PostgresStore.open(dsn)
     try:
         applied = initialize(store)
@@ -225,12 +233,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         elif args.command == "errors":
             result = {"errors": store.recent_errors(stage=args.stage, limit=args.limit)}
         elif args.command == "retry":
-            result = {"requeued": store.retry_failed(args.stage)}
+            result = {"requeued": store.retry_failed(args.stage, site=args.site, limit=args.limit)}
         elif args.command == "enqueue-backfill":
             if args.stage == "embed":
                 result = {
                     "enqueued": store.enqueue_embedding_backfill(
-                        limit=args.limit, priority=args.priority
+                        limit=args.limit, priority=args.priority, reindex=args.reindex
                     )
                 }
             else:

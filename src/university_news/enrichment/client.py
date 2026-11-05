@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..settings import config_section
 from ..operations.identity import stable_article_id
+from .agenda import AGENDA_MACROTEMAS
 from .rate_limit import PacedPool
 from .schema import SHARED_SECTION, ClippingSchema
 
@@ -30,7 +31,7 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECAS
 # Semantic halves of the contract, used when one call does not fit the context.
 _SECTION_BUNDLES = (
     ("summary", "classification", "topics", "entities"),
-    ("context", "research", "societal_impact", "communication"),
+    ("context", "research", "five_w_one_h", "agenda_nacional", "societal_impact", "communication"),
 )
 
 
@@ -424,6 +425,24 @@ class ClippingEnricher:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        agenda_guidance = ""
+        if "agenda_nacional" in contract:
+            agenda_guidance = (
+                "Em agenda_nacional.macrotemas, selecione zero ou mais códigos "
+                "diretamente relacionados ao conteúdo, sem duplicatas; use [] "
+                "quando nenhum se aplicar. Alinhamento temático não comprova impacto. "
+                "Macrotemas da Agenda Nacional: "
+                + "; ".join(f"{code}: {name}" for code, name in AGENDA_MACROTEMAS.items())
+                + ". "
+            )
+        five_w_guidance = ""
+        if "five_w_one_h" in contract:
+            five_w_guidance = (
+                "Em five_w_one_h, responda de forma breve: what (o quê), who (quem), "
+                "when (quando ocorreu ou ocorrerá o fato), where (onde), why (por quê "
+                "ou objetivo) e how (como). Use null quando a resposta não estiver "
+                "no texto; data de publicação não é necessariamente data do fato. "
+            )
         return (
             "Você extrai metadados estruturados de notícias universitárias "
             f"brasileiras. Esta é a parte {call_number} de {total_calls}. "
@@ -435,7 +454,8 @@ class ClippingEnricher:
             "liste só os ODS (1 a 17) diretamente relacionados à notícia, ou "
             "lista vazia. Escreva os textos livres em português. Marque "
             "quality.requires_human_review quando a notícia for ambígua ou "
-            "contraditória.\nContrato do fragmento:\n"
+            "contraditória.\n"
+            f"{agenda_guidance}{five_w_guidance}Contrato do fragmento:\n"
             f"{compact_contract}"
         )
 

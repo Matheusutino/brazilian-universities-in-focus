@@ -29,8 +29,8 @@ integration suite was verified on PostgreSQL 16.15 with pg_search 0.26.4.
 
 `init-search` uses the writer `DATABASE_URL`, applies migration 4, backfills
 existing accepted articles, and creates the BM25 index. It is an explicit
-deployment step, never performed by API requests. For a fresh database, import
-the historical corpus with `university-news-db import-existing-data` first.
+deployment step, never performed by API requests. A fresh collection can run
+directly into PostgreSQL; importing the historical corpus is optional.
 File-only LLM annotations must be imported through a deliberate data migration
 before retiring those exports; they are not automatically loaded by the site.
 

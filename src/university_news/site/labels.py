@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from ..enrichment.agenda import AGENDA_MACROTEMAS
+
 LABELS: dict[str, dict[str, str]] = {
     "content_type": {
         "noticia": "Notícia",
@@ -77,16 +79,7 @@ LABELS: dict[str, dict[str, str]] = {
         "civil_society": "Sociedade civil",
         "international": "Internacional",
     },
-    "dimensions": {
-        "health": "Saúde",
-        "education": "Educação",
-        "environment": "Meio ambiente",
-        "economy": "Economia",
-        "technology": "Tecnologia",
-        "culture": "Cultura",
-        "social": "Social",
-        "public_policy": "Políticas públicas",
-    },
+    "macrotemas": {code: f"{code} · {name}" for code, name in AGENDA_MACROTEMAS.items()},
     "audience": {
         "general_public": "Público geral",
         "scientific_community": "Comunidade científica",

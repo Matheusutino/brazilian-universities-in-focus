@@ -5,21 +5,15 @@ import hashlib
 import json
 import os
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tqdm import tqdm
-
-from ..paths import DEFAULT_DATA_ROOT, compiled_articles_path, indexes_directory
+from ..paths import DEFAULT_DATA_ROOT, indexes_directory
 from ..settings import config_section
 from ..operations.identity import stable_article_id
 from ..sources.catalog import region_for_site
 from .embeddings import (
-    DEFAULT_CONTEXT_LENGTH,
-    DEFAULT_MODEL_FILE,
-    DEFAULT_MODEL_REPO,
     QwenGGUFEmbedder,
     QUERY_INSTRUCTION,
 )
@@ -32,47 +26,6 @@ DEFAULT_DATABASE = indexes_directory(DEFAULT_DATA_ROOT) / "lancedb"
 DEFAULT_TABLE = "university_articles"
 INDEX_METADATA = "index_metadata.json"
 ANN_MIN_ROWS = 256
-
-
-@dataclass(frozen=True, slots=True)
-class IndexStats:
-    table: str
-    indexed: int
-    skipped: int
-    removed: int
-    duplicate_urls_removed: int
-    truncated: int
-    source: str
-    database: str
-
-
-def load_articles(path: Path) -> list[dict[str, Any]]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise ValueError(f"Invalid consolidated JSON at {path}") from exc
-    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
-        raise ValueError("The consolidated JSON must contain a list of objects")
-    return value
-
-
-def deduplicate_articles(
-    articles: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int]:
-    unique: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-    duplicates = 0
-    for article in articles:
-        url = article.get("url")
-        if not isinstance(url, str) or not (url_key := url.strip()):
-            unique.append(article)
-            continue
-        if url_key in seen_urls:
-            duplicates += 1
-            continue
-        seen_urls.add(url_key)
-        unique.append(article)
-    return unique, duplicates
 
 
 def article_id(article: dict[str, Any]) -> str:
@@ -181,27 +134,9 @@ def open_or_create_table(
     if existing_dimension != dimension:
         raise ValueError(
             f"The existing table uses {existing_dimension} dimensions; "
-            "run again with --recreate"
+            "rebuild the index using the PostgreSQL embed worker"
         )
     return table
-
-
-def existing_hashes(table: Any) -> dict[str, str]:
-    count = table.count_rows()
-    if count == 0:
-        return {}
-    rows = (
-        table.search()
-        .select(["article_id", "content_hash"])
-        .limit(count)
-        .to_arrow()
-    )
-    return dict(
-        zip(
-            rows.column("article_id").to_pylist(),
-            rows.column("content_hash").to_pylist(),
-        )
-    )
 
 
 def index_records(table: Any, records: list[dict[str, Any]]) -> None:
@@ -285,214 +220,28 @@ def write_metadata(
     temporary.replace(target)
 
 
-def index_articles(
-    source: Path,
-    *,
-    database_path: Path = DEFAULT_DATABASE,
-    table_name: str = DEFAULT_TABLE,
-    batch_size: int = 8,
-    recreate: bool = False,
-    embedder: QwenGGUFEmbedder | None = None,
-    database: Any | None = None,
-) -> IndexStats:
-    if batch_size < 1:
-        raise ValueError("batch_size must be at least 1")
-    eligible_articles = [
-        article
-        for article in load_articles(source)
-        if article.get("url") and article_content(article)
-    ]
-    articles, duplicate_urls_removed = deduplicate_articles(eligible_articles)
-    embedder = embedder or QwenGGUFEmbedder()
-    database = database or connect_database(database_path)
-    table = open_or_create_table(
-        database,
-        table_name,
-        embedder.dimension,
-        recreate=recreate,
-    )
-    metadata = load_index_metadata(database_path)
-    expected_model = embedding_contract(embedder, table_name)
-    if not recreate and table.count_rows():
-        if not metadata:
-            raise ValueError(
-                "The existing table has no model metadata; "
-                "run again with --recreate"
-            )
-        mismatched = [
-            key for key, value in expected_model.items() if metadata.get(key) != value
-        ]
-        if mismatched:
-            raise ValueError(
-                "The model does not match the existing index "
-                f"({', '.join(mismatched)}); run again with --recreate"
-            )
-    # Writing this before the first expensive embedding batch makes an
-    # interrupted first index resumable on the next invocation.
-    write_metadata(database_path, table=table_name, embedder=embedder)
-    known = {} if recreate else existing_hashes(table)
-    pending: list[tuple[dict[str, Any], str, str]] = []
-    desired_ids: set[str] = set()
-    skipped = 0
-    for article in articles:
-        identifier = article_id(article)
-        desired_ids.add(identifier)
-        content = article_content(article)
-        digest = indexed_hash(article, content)
-        if known.get(identifier) == digest:
-            skipped += 1
-        else:
-            pending.append((article, content, digest))
-
-    truncated_total = 0
-    for start in tqdm(
-        range(0, len(pending), batch_size),
-        desc="Gerando embeddings",
-        unit="lote",
-    ):
-        batch = pending[start : start + batch_size]
-        embedded = embedder.encode_documents([content for _, content, _ in batch])
-        records = []
-        for (article, _, digest), vector, truncated in zip(
-            batch,
-            embedded.vectors,
-            embedded.truncated,
-        ):
-            journal = str(article.get("journal", "")).upper()
-            records.append(
-                {
-                    "article_id": article_id(article),
-                    "content_hash": digest,
-                    "journal": journal,
-                    "region": region_for_site(journal),
-                    "date": valid_date(article.get("date")),
-                    "truncated": truncated,
-                    "vector": vector,
-                }
-            )
-            truncated_total += int(truncated)
-        if records:
-            index_records(table, records)
-
-    stale_ids = sorted(set(known).difference(desired_ids))
-    for start in range(0, len(stale_ids), 500):
-        batch = stale_ids[start : start + 500]
-        values = ", ".join(f"'{identifier}'" for identifier in batch)
-        table.delete(f"article_id IN ({values})")
-
-    ensure_indexes(table, rebuild=recreate)
-    compact_table(table)
-    write_metadata(database_path, table=table_name, embedder=embedder)
-    return IndexStats(
-        table=table_name,
-        indexed=len(pending),
-        skipped=skipped,
-        removed=len(stale_ids),
-        duplicate_urls_removed=duplicate_urls_removed,
-        truncated=truncated_total,
-        source=str(source),
-        database=str(database_path),
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     search = config_section("search")
-    embedding = config_section("embedding")
-    configured_model_path = str(embedding.get("model_path", "")).strip()
     parser = argparse.ArgumentParser(
-        prog="university-news-index",
-        description="Index compiled articles in LanceDB with Qwen3 Embedding GGUF.",
+        prog="university-news-index", description="Compact the configured LanceDB index."
     )
-    parser.add_argument(
-        "--source",
-        type=Path,
-        default=compiled_articles_path(DEFAULT_DATA_ROOT),
-    )
-    parser.add_argument(
-        "--database",
-        type=Path,
-        default=Path(str(search.get("lancedb_path", DEFAULT_DATABASE))),
-    )
-    parser.add_argument(
-        "--table",
-        default=str(search.get("lancedb_table", DEFAULT_TABLE)),
-    )
-    parser.add_argument(
-        "--model-path",
-        type=Path,
-        default=Path(configured_model_path) if configured_model_path else None,
-    )
-    parser.add_argument(
-        "--model-repo",
-        default=str(embedding.get("model_repo", DEFAULT_MODEL_REPO)),
-    )
-    parser.add_argument(
-        "--model-file",
-        default=str(embedding.get("model_file", DEFAULT_MODEL_FILE)),
-    )
-    parser.add_argument(
-        "--context-length",
-        type=int,
-        default=int(embedding.get("context_length", DEFAULT_CONTEXT_LENGTH)),
-    )
-    parser.add_argument("--threads", type=int, default=int(embedding.get("threads", 8)))
-    parser.add_argument(
-        "--gpu-layers",
-        type=int,
-        default=int(embedding.get("gpu_layers", -1)),
-        help="-1 offloads every layer to the GPU; 0 forces CPU",
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=int(embedding.get("batch_size", 8))
-    )
-    parser.add_argument("--recreate", action="store_true")
-    parser.add_argument(
-        "--optimize",
-        action="store_true",
-        help="Only compact the table and delete old versions (no model is loaded)",
-    )
-    parser.add_argument(
-        "--keep-versions-hours",
-        type=float,
-        default=DEFAULT_VERSION_RETENTION.total_seconds() / 3600,
-        help="With --optimize: keep versions newer than this (0 when no writer runs)",
-    )
+    parser.add_argument("--optimize", action="store_true", required=True)
+    parser.add_argument("--database", type=Path, default=Path(str(search.get("lancedb_path", DEFAULT_DATABASE))))
+    parser.add_argument("--table", default=str(search.get("lancedb_table", DEFAULT_TABLE)))
+    parser.add_argument("--keep-versions-hours", type=float, default=DEFAULT_VERSION_RETENTION.total_seconds() / 3600)
     return parser
 
 
 def run(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.optimize:
-        try:
-            table = connect_database(args.database).open_table(args.table)
-            rows = table.count_rows()
-            compact_table(table, keep_versions_for=timedelta(hours=args.keep_versions_hours))
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(f"Optimization failed: {exc}")
-            return 1
-        print(json.dumps({"table": args.table, "rows": rows, "optimized": True}))
-        return 0
     try:
-        embedder = QwenGGUFEmbedder(
-            model_path=args.model_path,
-            model_repo=args.model_repo,
-            model_file=args.model_file,
-            context_length=args.context_length,
-            threads=args.threads,
-            gpu_layers=args.gpu_layers,
-        )
-        stats = index_articles(
-            args.source,
-            database_path=args.database,
-            table_name=args.table,
-            batch_size=args.batch_size,
-            recreate=args.recreate,
-            embedder=embedder,
-        )
+        table = connect_database(args.database).open_table(args.table)
+        rows = table.count_rows()
+        compact_table(table, keep_versions_for=timedelta(hours=args.keep_versions_hours))
     except (OSError, RuntimeError, ValueError) as exc:
-        print(f"Indexing failed: {exc}")
+        print(f"Optimization failed: {exc}")
         return 1
-    print(json.dumps(asdict(stats), ensure_ascii=False))
+    print(json.dumps({"table": args.table, "rows": rows, "optimized": True}))
     return 0
 
 

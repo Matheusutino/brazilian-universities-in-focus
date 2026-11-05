@@ -17,6 +17,25 @@ from university_news.site.statistics import deduplicate_keywords, site_statistic
 def article_id(url):
     return str(stable_article_id(url))
 
+
+def test_ufam_logo_and_decision_support_are_rendered() -> None:
+    from university_news.site.render import make_environment
+
+    environment = make_environment()
+    stats = {
+        "articles": 10, "annotated": 3, "earliest_year": 2020, "latest_year": 2026,
+        "regions": ["Norte"],
+        "universities": [{"journal": "UFAM", "region": "Norte", "news": 10,
+                          "earliest": "2020-01-01", "latest": "2026-01-01", "annotated": 3}],
+    }
+    context = {"stats": stats, "version": "test", "page": "home"}
+    home = environment.get_template("home.html").render(**context, latest=[])
+    universities = environment.get_template("universities.html").render(**context)
+    assert "apoiar a tomada de decisões" in home
+    assert "3 notícias analisadas com IA" in home
+    assert "/static/logos/ufam.png" in universities
+    assert 'alt="Logo UFAM"' in universities
+
 ARTICLES = [
     {"url": "https://usp.br/a", "title": "Vacina contra a dengue avança em testes", "subtitle": "Estudo clínico da USP", "author": "Ana", "date": "2026-07-10", "journal": "usp"},
     {"url": "https://usp.br/b", "title": "Festival de música no campus", "subtitle": "Programação cultural", "author": None, "date": "2026-07-12", "journal": "USP"},
@@ -62,6 +81,33 @@ def annotation(url, category, fields):
         "quality.requires_human_review": False,
         "entities": json.dumps([{"name": "USP", "type": "university", "role": "partner", "affiliation": None}]),
     }
+
+
+def test_article_shows_new_contract_and_handles_legacy_annotations() -> None:
+    from university_news.site.render import make_environment
+
+    template = make_environment().get_template("article.html")
+    record = annotation("https://usp.br/a", "evento", [])
+    article = ARTICLES[0] | {"region": "Sudeste", "journal": "USP"}
+    context = {"article": article, "version": "test", "stats": {"articles": 1, "universities": []}}
+    legacy = template.render(**context, a=record)
+    assert "A notícia em 5W1H" not in legacy
+    assert "Alinhamento com a Agenda Nacional" not in legacy
+    updated = record | {
+        "five_w_one_h.what": "Pesquisa sobre vacina",
+        "agenda_nacional.macrotemas": ["M9", "M10"],
+    }
+    rendered = template.render(**context, a=updated)
+    assert "Pesquisa sobre vacina" in rendered
+    assert "M9 · Saúde, Qualidade de Vida e Tecnologias" in rendered
+    assert "M10 · Biodiversidade, Biotecnologia e Bioeconomia" in rendered
+    assert "não comprova impacto social" in rendered
+    assert "Dimensões de impacto" not in rendered
+
+    updated["agenda_nacional.macrotemas"] = []
+    assert "Alinhamento com a Agenda Nacional" in template.render(
+        **context, a=updated
+    )
 
 
 @pytest.fixture()
@@ -380,6 +426,9 @@ def test_readiness_distinguishes_bm25_availability_from_verified_semantics(site)
     assert client.get("/healthz").json()["degraded"]
     assert client.get("/readyz").status_code == 503
     index.semantic_health.record(ready=True, state="ready", efficient=True, hits=1)
+    assert client.get("/readyz").status_code == 200
+    index.semantic_health.record(ready=True, state="ready", efficient=True, coverage_estimate=0.2)
+    assert client.get("/healthz").json()["degraded"]
     assert client.get("/readyz").status_code == 200
     index.semantic_health.failure(RuntimeError("storage failed"))
     assert client.get("/readyz").status_code == 503

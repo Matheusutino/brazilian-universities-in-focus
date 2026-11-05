@@ -85,6 +85,58 @@ def test_migrations_apply_once_and_record_their_versions(store) -> None:
     assert store.schema_version() == 6
 
 
+def test_retry_failed_filters_site_stage_and_limit(store):
+    store.initialize()
+    for site in ("ufam", "ufpr"):
+        store.register_source(site, f"https://{site}.example/")
+        store.add_discovered_urls(
+            site, [f"https://{site}.example/{i}" for i in range(3)], run_id=None, page=1
+        )
+    store.connection.execute(
+        "UPDATE processing_jobs SET status='failed', attempts=5, last_error='old failure'"
+    )
+    assert store.retry_failed("fetch", site="ufam", limit=2) == 2
+    rows = store.connection.execute(
+        "SELECT site, status, attempts, last_error FROM processing_jobs ORDER BY id"
+    ).fetchall()
+    assert sum(row["status"] == "queued" for row in rows if row["site"] == "ufam") == 2
+    assert all(row["status"] == "failed" for row in rows if row["site"] == "ufpr")
+    assert all(row["attempts"] == 0 and row["last_error"] is None
+               for row in rows if row["status"] == "queued")
+    with pytest.raises(ValueError, match="limit"):
+        store.retry_failed("fetch", limit=0)
+    assert store.retry_failed("fetch", site="ufam") == 1
+    assert store.retry_failed("fetch") == 3
+
+
+def test_embedding_reindex_queues_completed_and_failed_without_touching_running_jobs(store):
+    identifiers = seed_articles(store, 5)
+    store.enqueue_embedding_backfill(limit=4)
+    rows = store.connection.execute(
+        "SELECT id, article_id FROM processing_jobs WHERE stage='embed' ORDER BY id"
+    ).fetchall()
+    for row, status in zip(rows, ("completed", "failed", "running", "queued")):
+        store.connection.execute(
+            "UPDATE processing_jobs SET status=%s, attempts=3 WHERE id=%s", (status, row["id"])
+        )
+    store.save_embedding_state(identifiers[0], content_hash="old", model="old")
+    store.save_embedding_state(identifiers[0], content_hash="new", model="new")
+    state = store.connection.execute(
+        "SELECT content_hash, model FROM embedding_state WHERE article_id=%s", (identifiers[0],)
+    ).fetchone()
+    assert state == {"content_hash": "new", "model": "new"}
+    assert store.enqueue_embedding_backfill(limit=None) == 1
+    assert store.enqueue_embedding_backfill(limit=1, reindex=True) == 1
+    assert store.enqueue_embedding_backfill(limit=None, reindex=True) == 1
+    jobs = store.connection.execute(
+        "SELECT status, attempts FROM processing_jobs WHERE stage='embed' ORDER BY id"
+    ).fetchall()
+    assert [job["status"] for job in jobs] == ["queued", "queued", "running", "queued", "queued"]
+    assert jobs[0]["attempts"] == jobs[1]["attempts"] == 0
+    assert jobs[2]["attempts"] == 3
+    assert store.enqueue_embedding_backfill(limit=None, reindex=True) == 0
+
+
 def test_lease_migration_preserves_existing_jobs_and_reclaims_expired_claims(store):
     store.connection.execute(
         "CREATE TABLE schema_migrations (version integer PRIMARY KEY, description text)"

@@ -274,6 +274,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         parser.error("lease, attempts, or polling interval is outside its valid range")
     if args.max_jobs is not None and args.max_jobs < 1:
         parser.error("--max-jobs must be at least 1")
+    if "embed" in args.stages and int(config_section("embedding").get("gpu_layers", -1)) == 0:
+        # CUDA builds may initialize a full GPU even when no layers are offloaded.
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     if workers > 1 and args.max_jobs is not None:
         parser.error("--max-jobs currently requires --workers 1")
     dsn = os.getenv("DATABASE_URL", "").strip()

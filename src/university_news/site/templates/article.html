@@ -36,6 +36,22 @@
   {{ fact("Acessibilidade", a["communication.accessibility_0_4"] ~ " de 4") }}
   {{ fact("Profundidade científica", a["communication.scientific_depth_0_4"] ~ " de 4") }}
 </div>
+{% if "five_w_one_h.what" in a %}
+{{ section_head("A notícia em 5W1H") }}
+<div class="fact-grid">
+  {{ fact("O quê?", a.get("five_w_one_h.what")) }}
+  {{ fact("Quem?", a.get("five_w_one_h.who")) }}
+  {{ fact("Quando?", a.get("five_w_one_h.when")) }}
+  {{ fact("Onde?", a.get("five_w_one_h.where")) }}
+  {{ fact("Por quê?", a.get("five_w_one_h.why")) }}
+  {{ fact("Como?", a.get("five_w_one_h.how")) }}
+</div>
+{% endif %}
+{% if "agenda_nacional.macrotemas" in a %}
+{{ section_head("Alinhamento com a Agenda Nacional") }}
+<p class="chart-note">Associação temática automática; não comprova impacto social. <a href="https://agendanacional.ufms.br/" target="_blank" rel="noopener noreferrer">Conheça a Agenda Nacional ↗</a></p>
+{{ chips("macrotemas" | labels(a["agenda_nacional.macrotemas"])) }}
+{% endif %}
 <div class="chart-grid">
   <div><h3 class="chart-title">Palavras-chave</h3>{{ chips(a["topics.keywords"]) }}</div>
   <div><h3 class="chart-title">Locais</h3>{{ chips(a["context.locations"]) }}</div>
@@ -46,7 +62,6 @@
   {{ fact("Estágio", "stage" | label(a["research.stage"])) }}
   {{ fact("Agências de fomento", (a["research.funding_agencies"] or []) | join(", ")) }}
   {{ fact("Colaboração", "collaboration_types" | labels(a["research.collaboration_types"]) | join(", ")) }}
-  {{ fact("Dimensões de impacto", "dimensions" | labels(a["societal_impact.dimensions"]) | join(", ")) }}
   {{ fact("Beneficiários", (a["societal_impact.beneficiaries"] or []) | join(", ")) }}
 </div>
 {% if a["research.findings"] %}

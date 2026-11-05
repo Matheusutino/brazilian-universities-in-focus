@@ -110,7 +110,8 @@ def test_monitor_retries_failed_probes_and_only_installs_verified_backend(monkey
     health = SemanticHealth(enabled=True)
     observed = []
     outcomes = ["awaiting_data", "error", "ready"]
-    index = SimpleNamespace(encoder=None, semantic=None, _matching_rows=lambda ids, query: ids)
+    index = SimpleNamespace(encoder=None, semantic=None, _matching_rows=lambda ids, query: ids,
+                            published_count=lambda: 10)
 
     class Runtime:
         encoder = Encoder()
@@ -119,7 +120,7 @@ def test_monitor_retries_failed_probes_and_only_installs_verified_backend(monkey
             state = outcomes.pop(0)
             if state == "error":
                 raise RuntimeError("temporary storage failure")
-            return {"ready": state == "ready", "state": state, "efficient": True}
+            return {"ready": state == "ready", "state": state, "efficient": True, "rows": 2}
 
         def search(self, *args):
             return ["first"]
@@ -134,6 +135,7 @@ def test_monitor_retries_failed_probes_and_only_installs_verified_backend(monkey
     monitor_semantic_search({"health_interval_seconds": 1}, index, health, Stop())
     assert observed == ["awaiting_data", "error", "ready"]
     assert index.encoder is not None and index.semantic is not None
+    assert health.snapshot()["coverage_estimate"] == 0.2
 
 
 def test_real_ann_index_reports_coverage_and_matches_exact_top_results(runtime):

@@ -34,6 +34,15 @@
   "license": "Public domain",
   "author": "Universidade Federal de Alagoas"
  },
+ "ufam": {
+  "file": "ufam.png",
+  "source": "https://commons.wikimedia.org/wiki/File:Brasao_ufam_2011.jpg",
+  "original": "File:Brasao ufam 2011.jpg",
+  "license": "CC BY 3.0",
+  "license_url": "https://creativecommons.org/licenses/by/3.0/",
+  "author": "Universidade Federal do Amazonas",
+  "changes": "Recorte e redimensionamento para o padrão visual do site"
+ },
  "ufc": {
   "file": "ufc.png",
   "source": "https://commons.wikimedia.org/wiki/File:Brasao4_vertical_cor_300dpi.png",

@@ -18,7 +18,6 @@ cp .env.example .env
 | --- | --- |
 | `NVIDIA_API_KEY` or `NVIDIA_API_KEYS` | enrichment with NVIDIA NIM (default); the plural form takes a comma-separated list |
 | `OPENWEBUI_API_KEY` or `OPENWEBUI_API_KEYS` | enrichment with OpenWebUI |
-| `OPENROUTER_API_KEY` | `--extractor llm` or `--extractor hybrid` |
 | `DATABASE_URL` | the PostgreSQL pipeline; written by `scripts/setup_local_postgres.sh` |
 | `SITE_DATABASE_URL` | optional read-only website connection; falls back to `DATABASE_URL` |
 | `TEST_DATABASE_URL` | optional integration tests; the database is wiped |

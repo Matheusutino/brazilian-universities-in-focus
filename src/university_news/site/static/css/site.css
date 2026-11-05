@@ -44,6 +44,33 @@
 .page-intro p { margin: 0; }
 .page-title { font-size: clamp(2.3rem, 4.4vw, 3.4rem); line-height: 1.05; margin: 0 0 .8rem; }
 
+.decision-panel {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 2rem;
+    margin: 2rem 0 2.5rem;
+    padding: clamp(1.5rem, 3vw, 2.4rem);
+    border: 1px solid #cfdfd4;
+    border-radius: 16px;
+    background: var(--green-wash);
+}
+.decision-intro h2 {
+    margin: 0 0 .7rem;
+    font-family: var(--serif);
+    font-size: clamp(1.8rem, 3vw, 2.5rem);
+    line-height: 1.1;
+    letter-spacing: -.025em;
+}
+.decision-intro p { color: var(--ink-soft); line-height: 1.65; margin: 0 0 1rem; }
+.decision-intro a { font-weight: 800; text-decoration: none; }
+.decision-intro a:hover { text-decoration: underline; }
+.decision-uses { display: grid; align-content: start; gap: .75rem; }
+.decision-uses div { display: flex; flex-direction: column; border-bottom: 1px solid #cdded3; padding-bottom: .65rem; }
+.decision-uses strong { color: var(--green-dark); font-size: .9rem; }
+.decision-uses span, .decision-uses p { color: var(--ink-soft); font-size: .85rem; line-height: 1.5; }
+.decision-uses p { margin: 0; font-size: .78rem; }
+@media (max-width: 760px) { .decision-panel { grid-template-columns: 1fr; gap: 1.4rem; } }
+
 .stat-strip {
     display: grid;
     grid-template-columns: repeat(var(--stat-columns, 4), minmax(0, 1fr));

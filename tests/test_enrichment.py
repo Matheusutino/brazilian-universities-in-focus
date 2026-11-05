@@ -204,6 +204,24 @@ def test_schema_rejects_unknown_classification(
         clipping_schema.validate(valid_response)
 
 
+def test_agenda_accepts_zero_or_multiple_macrotemas(clipping_schema, valid_response) -> None:
+    for values in ([], ["M1", "M9", "M20"]):
+        valid_response["agenda_nacional"]["macrotemas"] = values
+        clipping_schema.validate(valid_response)
+
+
+@pytest.mark.parametrize("values", [["M21"], ["M1", "M1"]])
+def test_agenda_rejects_invalid_or_duplicate_macrotemas(clipping_schema, valid_response, values) -> None:
+    valid_response["agenda_nacional"]["macrotemas"] = values
+    with pytest.raises(ClippingValidationError, match="macrotemas"):
+        clipping_schema.validate(valid_response)
+
+
+def test_five_w_one_h_allows_missing_answers(clipping_schema, valid_response) -> None:
+    valid_response["five_w_one_h"] = {key: None for key in valid_response["five_w_one_h"]}
+    clipping_schema.validate(valid_response)
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
@@ -240,6 +258,8 @@ def test_model_contract_excludes_code_filled_metadata(
     contract = json.loads(system_prompt.split("Contrato do fragmento:\n", 1)[1])
     assert not set(CODE_FILLED_SECTIONS) & set(contract)
     assert "quality" in contract
+    assert "M20: Integração Regional" in system_prompt
+    assert "data de publicação não é necessariamente data do fato" in system_prompt
 
 
 def test_enricher_uses_chat_completions_and_preserves_source_metadata(
@@ -257,8 +277,8 @@ def test_enricher_uses_chat_completions_and_preserves_source_metadata(
     assert document["source_university"] == "USP"
     assert document["title"] == article()["title"]
     assert document["publication_date"] == "2026-08-07"
-    assert result["schema_version"] == "2.1.0"
-    assert result["analysis"]["schema_version"] == "2.1.0"
+    assert result["schema_version"] == "3.0.0"
+    assert result["analysis"]["schema_version"] == "3.0.0"
     assert result["provider"] == "openwebui"
     request = fake.completions.requests[0]
     assert request["model"] == "externo.revejo-qwen3.6-35b-a3b"
@@ -571,7 +591,7 @@ def test_profile_is_stable_and_changes_with_generation_settings(clipping_schema)
     )
 
     assert first.profile == same.profile
-    assert first.profile.id.startswith("externo-revejo-qwen3-6-35b-a3b-v2.1.0-")
+    assert first.profile.id.startswith("externo-revejo-qwen3-6-35b-a3b-v3.0.0-")
     assert warmer.profile.id != first.profile.id
     assert warmer.profile.prompt_sha256 == first.profile.prompt_sha256
 

@@ -96,9 +96,8 @@ uv run university-news-site serve        # http://127.0.0.1:8501
 ```
 
 For a new full collection, use `university-news-daily --max-pages 4000`
-instead of importing old JSON files. The historical/offline `university-news`,
-`university-news-all`, preprocessing, and file enrichment commands remain
-explicit file-based tools; they are not the production ingestion path.
+instead of importing old JSON files. Optional preprocessing and file enrichment
+commands operate on research exports, not the production ingestion path.
 
 ## Documentation
 

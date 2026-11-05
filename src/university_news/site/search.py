@@ -188,6 +188,11 @@ class ArticleIndex:
             if not available["name"]:
                 raise RuntimeError("Run university-news-site init-search before serving")
 
+    def published_count(self) -> int:
+        with self.pool.connection() as connection:
+            row = connection.execute("SELECT count(*) AS total FROM site_documents").fetchone()
+        return int(row["total"])
+
     def article(self, identifier: str) -> dict[str, Any] | None:
         try:
             identifier = uuid.UUID(identifier)
@@ -260,7 +265,12 @@ class ArticleIndex:
         semantic: list[str] = []
         notes: list[str] = []
         encoder, semantic_search = self.encoder, self.semantic
-        verified = self.semantic_health is None or self.semantic_health.snapshot()["ready"]
+        semantic_status = self.semantic_health.snapshot() if self.semantic_health else None
+        verified = semantic_status is None or semantic_status["ready"]
+        if semantic_status and semantic_status.get("coverage_estimate") is not None:
+            coverage = semantic_status["coverage_estimate"]
+            if coverage < 1:
+                notes.append(f"semantic index coverage is approximately {coverage:.1%}")
         if not semantic_enabled:
             notes.append("lexical only (requested)")
         elif semantic_search is not None and encoder is not None and verified:

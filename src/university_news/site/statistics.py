@@ -54,6 +54,7 @@ CHARTS: tuple[tuple[str, str, str, str, list[Any] | None], ...] = (
     ("tone", "Tom", "Como a notícia se posiciona", "communication.tone", None),
     ("hype", "Hype", "Exagero ou sensacionalismo na comunicação", "communication.hype", ["none", "low", "medium", "high"]),
     ("audience", "Público principal", "A quem a notícia se dirige", "communication.audience", None),
+    ("macrotemas", "Agenda Nacional: macrotemas", "Associações temáticas automáticas; não medem impacto social", "agenda_nacional.macrotemas", None),
     ("sdgs", "Objetivos de Desenvolvimento Sustentável", "ODS relacionados às notícias, na ordem oficial", "societal_impact.sdgs", list(range(1, 18))),
 )
 

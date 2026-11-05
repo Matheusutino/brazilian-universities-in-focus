@@ -43,7 +43,7 @@ projection. API queries validate vector hits against that projection.
 
 ```text
 src/university_news/
-├── pipeline/       # discovery, fetching, extraction, preprocessing, historical CLI
+├── pipeline/       # discovery, fetching, extraction, preprocessing
 ├── sources/        # university catalog, pagination, metadata selectors, regions
 ├── operations/     # PostgreSQL queue, migrations, projections, worker persistence
 ├── enrichment/     # validated LLM client and optional file-based batch CLI
@@ -66,8 +66,8 @@ embedding model/version metadata and rebuild the index if its contract changes.
 
 ## Files
 
-Production workers store HTML in PostgreSQL, not on disk. The optional offline
-file pipeline still uses `data/sites/<site>/raw/`. `data/models/` contains GGUF
-models; `data/indexes/lancedb/` contains vectors; `data/site/public/` contains
+Production workers store HTML in PostgreSQL, not on disk. Historical exports
+may still exist under `data/sites/`. `data/models/` contains GGUF
+models; `data/indexes/lancedb-v2/` contains vectors; `data/site/public/` contains
 generated pages and their snapshot statistics. Research exports remain under
 `data/compiled/` and `data/enriched/`. Runtime data is not committed.

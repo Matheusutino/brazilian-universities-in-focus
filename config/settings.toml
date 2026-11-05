@@ -63,7 +63,8 @@ model = "openai/gpt-4o-mini"
 
 [search]
 mode = "hybrid"
-lancedb_path = "data/indexes/lancedb"
+# Separate index with the complete model contract; the historical index is retained.
+lancedb_path = "data/indexes/lancedb-v2"
 lancedb_table = "university_articles"
 
 [embedding]
@@ -73,8 +74,9 @@ model_file = "Qwen3-Embedding-0.6B-Q8_0.gguf"
 model_path = "data/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
 context_length = 32768
 query_context_length = 1024
-gpu_layers = -1
-threads = 8
+# CPU avoids competing with the currently occupied shared GPU.
+gpu_layers = 0
+threads = 2
 batch_size = 8
 
 [site]
@@ -93,7 +95,5 @@ query_cache_size = 2048
 
 [runtime]
 log_directory = "data/logs"
-index_log = "lancedb-index-gpu.log"
-index_pid = "lancedb-index-gpu.pid"
 site_log = "site.log"
 site_pid = "site.pid"

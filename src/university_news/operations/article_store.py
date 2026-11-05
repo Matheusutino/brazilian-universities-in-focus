@@ -132,7 +132,9 @@ class ArticleStoreMixin:
                 """
                 INSERT INTO embedding_state (article_id, content_hash, model)
                 VALUES (%s, %s, %s)
-                ON CONFLICT (article_id) DO NOTHING
+                ON CONFLICT (article_id) DO UPDATE
+                SET content_hash = EXCLUDED.content_hash, model = EXCLUDED.model,
+                    indexed_at = now()
                 """,
                 (article_id, content_hash, model),
             )
@@ -174,7 +176,9 @@ class ArticleStoreMixin:
         article_inserted = cursor.rowcount > 0
         return article_inserted
 
-    def enqueue_embedding_backfill(self, *, limit: int | None, priority: int = 10) -> int:
+    def enqueue_embedding_backfill(
+        self, *, limit: int | None, priority: int = 10, reindex: bool = False
+    ) -> int:
         stage = "embed"
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
@@ -184,12 +188,17 @@ class ArticleStoreMixin:
                 FROM articles AS article
                 LEFT JOIN processing_jobs AS job
                   ON job.article_id = article.id AND job.stage = %s
-                WHERE article.status = 'accepted' AND job.id IS NULL
+                WHERE article.status = 'accepted'
+                  AND (job.id IS NULL OR (%s AND job.status IN ('completed', 'failed')))
                 ORDER BY article.processed_at, article.id
                 LIMIT %s
-                ON CONFLICT (article_id, stage) DO NOTHING
+                ON CONFLICT (article_id, stage) DO UPDATE
+                SET status = 'queued', priority = EXCLUDED.priority, attempts = 0,
+                    available_at = now(), finished_at = NULL, last_error = NULL,
+                    worker_id = NULL, lease_expires_at = NULL, lease_token = NULL
+                WHERE %s AND processing_jobs.status IN ('completed', 'failed')
                 """,
-                (stage, priority, stage, limit),  # LIMIT NULL means no limit.
+                (stage, priority, stage, reindex, limit, reindex),
             )
             return cursor.rowcount
 

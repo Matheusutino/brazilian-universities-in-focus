@@ -35,45 +35,10 @@ the bytes, checksum, encoding, content type, final URL, status and fetch time in
 PostgreSQL `raw_documents`. Extraction reads this table directly; no local HTML
 or JSON intermediate is needed.
 
-## Optional offline/file collection
+## Extraction
 
-```bash
-# One university, every stage
-uv run university-news usp --stage all
-
-# Individual stages
-uv run university-news usp --stage discovery
-uv run university-news usp --stage fetching
-uv run university-news usp --stage extraction
-
-# Several universities concurrently
-uv run university-news-all --jobs 3
-```
-
-`--start-page` and `--end-page` override the catalog's page range, and
-`--concurrency` (1–10) limits simultaneous requests. Outputs go to
-`data/sites/<site>/` unless `--output` is given.
-
-## Offline stages
-
-**Discovery** walks the paginated listing pages and extracts article links
-with the site's CSS selector. URLs are written to `urls.jsonl`.
-
-**Fetching** downloads each discovered URL asynchronously with `httpx`.
-Transient failures are retried with `tenacity`. Each response is recorded in
-`manifest.jsonl`; failures go to `errors.jsonl`.
-
-**Extraction** turns HTML into structured articles in `articles.jsonl`, with
-the fields title, subtitle, author, date, text, tags, links, and images. Three
-backends are available through `--extractor`:
-
-| Mode | Behavior |
-| --- | --- |
-| `trafilatura` (default) | trafilatura plus the catalog selectors and site rules |
-| `llm` | crawl4ai with an OpenRouter model returning a Pydantic schema |
-| `hybrid` | trafilatura first; falls back to the LLM when the title, author, or date is missing or the text is shorter than 200 characters |
-
-The LLM modes require `OPENROUTER_API_KEY`.
+The production worker uses trafilatura, portal selectors, and site-specific rules
+to extract articles from the HTML stored in PostgreSQL.
 
 ## Daily discovery and recovering gaps
 
@@ -111,9 +76,8 @@ it with `openssl x509 -inform der -in issuer.crt -out config/certs/<name>.pem`.
   (offsets 0–2150); extend `end_page` as it grows. Metadata comes from
   `.documentFirstHeading`, `.documentAuthor`, and `.documentPublished` inside
   `.item-page`. This source covers the Notícias section, not every category
-  or subdomain maintained by UFAM. To collect it, run
-  `uv run university-news ufam --stage all`; daily discovery also includes it
-  by default.
+  or subdomain maintained by UFAM. Daily discovery includes it by default;
+  use `uv run university-news-daily --sites ufam` to target it.
 
 - **USP** blocks HTML pagination beyond page 15 ("Limite de paginação
   excedido"), so it is listed through the WordPress REST API instead

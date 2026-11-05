@@ -1,159 +1,28 @@
 import json
-import logging
 import re
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 from lxml import etree
 from trafilatura import extract
 
-from ..shared.io import append_jsonl, read_jsonl
 from ..sources.catalog import SiteConfig
-from .fetching import ContentFetcher
-from .llm_extraction import LLMArticleExtractor
 from .site_rules import enrich_article_from_url
 
-ExtractionMode = Literal["trafilatura", "llm", "hybrid"]
-LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class ExtractionResult:
-    extracted: int
-    skipped: int
-    errors: list[dict[str, object]]
 
 
 class StructuredExtractor:
     def __init__(
         self,
-        raw_directory: Path | None = None,
-        articles_path: Path | None = None,
         *,
-        mode: ExtractionMode = "trafilatura",
         site: SiteConfig | None = None,
-        llm_extractor: LLMArticleExtractor | None = None,
     ) -> None:
-        if mode not in {"trafilatura", "llm", "hybrid"}:
-            raise ValueError(f"Invalid extractor: {mode}")
-        self.raw_directory = raw_directory
-        self.articles_path = articles_path
-        self.mode = mode
         self.site = site
-        self._llm_extractor = llm_extractor
-
-    def run(self, urls: list[str], *, force: bool = False) -> ExtractionResult:
-        if self.articles_path is None or self.raw_directory is None:
-            raise ValueError("File batch extraction requires raw_directory and articles_path")
-        processed = set() if force else self._processed_urls()
-        extracted_count = 0
-        skipped_count = 0
-        errors: list[dict[str, object]] = []
-        total = len(urls)
-
-        LOGGER.info(
-            "Iniciando extraction: total=%s, ja_processadas=%s, force=%s, extractor=%s",
-            total,
-            len(processed),
-            force,
-            self.mode,
-        )
-
-        for index, url in enumerate(urls, start=1):
-            if self._is_excluded_article_url(url):
-                skipped_count += 1
-                self._log_progress(
-                    index, total, extracted_count, skipped_count, len(errors)
-                )
-                continue
-            if url in processed:
-                skipped_count += 1
-                self._log_progress(
-                    index, total, extracted_count, skipped_count, len(errors)
-                )
-                continue
-            raw_path = self.raw_directory / ContentFetcher.filename_for_url(url)
-            if not raw_path.is_file() or raw_path.stat().st_size == 0:
-                errors.append(
-                    self._error(url, "HTMLNotFound", f"HTML not found: {raw_path}")
-                )
-                self._log_progress(
-                    index, total, extracted_count, skipped_count, len(errors)
-                )
-                continue
-            try:
-                article = self.extract_file(raw_path, url)
-                append_jsonl(self.articles_path, [article])
-                extracted_count += 1
-            except Exception as exc:
-                errors.append(self._error(url, type(exc).__name__, str(exc)))
-            self._log_progress(index, total, extracted_count, skipped_count, len(errors))
-
-        LOGGER.info(
-            "Extraction complete: total=%s, extracted=%s, skipped=%s, errors=%s",
-            total,
-            extracted_count,
-            skipped_count,
-            len(errors),
-        )
-        return ExtractionResult(extracted_count, skipped_count, errors)
-
-    @staticmethod
-    def _log_progress(
-        index: int, total: int, extracted_count: int, skipped_count: int, errors: int
-    ) -> None:
-        if total == 0:
-            return
-        if index == total or index % 100 == 0:
-            LOGGER.info(
-            "Extraction progress: %s/%s, extracted=%s, skipped=%s, errors=%s",
-                index,
-                total,
-                extracted_count,
-                skipped_count,
-                errors,
-            )
-
-    def extract_file(self, raw_path: Path, url: str) -> dict[str, object]:
-        html = raw_path.read_text(encoding="utf-8", errors="replace")
-        return self.extract_html(html, url)
 
     def extract_html(self, html: str, url: str) -> dict[str, object]:
         """Extract an in-memory document without intermediate filesystem artifacts."""
-        if self.mode == "llm":
-            return self._llm().extract(html, url)
-
-        trafilatura_article: dict[str, object] | None = None
-        trafilatura_error: Exception | None = None
-        try:
-            trafilatura_article = self._extract_with_trafilatura(html, url)
-        except Exception as exc:
-            trafilatura_error = exc
-
-        if self.mode == "trafilatura":
-            if trafilatura_error is not None:
-                raise trafilatura_error
-            assert trafilatura_article is not None
-            return trafilatura_article
-
-        if trafilatura_article is not None and not self._needs_llm(trafilatura_article):
-            return trafilatura_article
-        try:
-            return self._llm().extract(html, url)
-        except Exception as exc:
-            if trafilatura_article is not None:
-                LOGGER.warning(
-                    "LLM falhou para %s; mantendo resultado do trafilatura: %s",
-                    url,
-                    exc,
-                )
-                return trafilatura_article
-            if trafilatura_error is not None:
-                raise trafilatura_error
-            raise
+        return self._extract_with_trafilatura(html, url)
 
     def _extract_with_trafilatura(self, html: str, url: str) -> dict[str, object]:
         payload = extract(html, url=url, output_format="json", with_metadata=True)
@@ -223,13 +92,6 @@ class StructuredExtractor:
                     images.add(normalized)
         return links, images
 
-    def _llm(self) -> LLMArticleExtractor:
-        if self._llm_extractor is None:
-            self._llm_extractor = LLMArticleExtractor(
-                content_selector=self.site.content_selector if self.site else None
-            )
-        return self._llm_extractor
-
     def _enrich_from_site_html(self, article: dict[str, object], html: str) -> None:
         if self.site is None:
             return
@@ -288,15 +150,6 @@ class StructuredExtractor:
             if tags:
                 article["tags"] = sorted(tags)
 
-    def _is_excluded_article_url(self, url: str) -> bool:
-        if self.site is None:
-            return False
-        path = urlsplit(url).path
-        return any(
-            path.startswith(prefix)
-            for prefix in self.site.excluded_article_path_prefixes
-        )
-
     def _enrich_from_url(
         self,
         article: dict[str, object],
@@ -324,31 +177,6 @@ class StructuredExtractor:
             lines.pop(0)
         cleaned = "\n".join(lines).strip()
         return cleaned or text
-
-    @staticmethod
-    def _needs_llm(article: dict[str, object]) -> bool:
-        text = article.get("text")
-        return (
-            not article.get("title")
-            or not article.get("author")
-            or not article.get("date")
-            or not isinstance(text, str)
-            or len(text) < 200
-        )
-
-    def _processed_urls(self) -> set[str]:
-        assert self.articles_path is not None
-        records = read_jsonl(self.articles_path)
-        required_fields = {"subtitle", "links", "images"}
-        if any(not required_fields.issubset(record) for record in records):
-            raise ValueError(
-                "articles.jsonl usa um schema antigo; execute extraction com --force"
-            )
-        return {
-            str(record["url"])
-            for record in records
-            if isinstance(record.get("url"), str)
-        }
 
     @classmethod
     def _extract_resources(
@@ -461,12 +289,3 @@ class StructuredExtractor:
             values = [value]
         tags = {tag for item in values if (tag := cls._optional_string(item))}
         return sorted(tags)
-
-    @staticmethod
-    def _error(url: str, error: str, message: str) -> dict[str, object]:
-        return {
-            "stage": "extraction",
-            "url": url,
-            "error": error,
-            "message": message,
-        }

@@ -19,10 +19,8 @@ Qwen3 Embedding 0.6B (GGUF, Q8_0) runs through llama-cpp-python. Article
 vectors live in LanceDB with article ID, content hash, university, region,
 and date. Only query embeddings are calculated during search.
 
-New production articles use the durable `embed` worker. The file indexer and
-`scripts/start_gpu_indexing.sh` are historical/offline tools that read the
-compiled file; the script always passes `--recreate`, which overwrites the
-configured LanceDB table. Do not run it against the active production index.
+New production articles use the durable `embed` worker. File-based indexing
+and the old recreate script have been removed to protect the active index.
 All paths share canonical UUID article IDs.
 Reconcile or rebuild an old index if its IDs were generated from
 noncanonical URLs.
@@ -30,6 +28,15 @@ noncanonical URLs.
 Document context, batching, threads, and GPU layers are configured under
 `[embedding]`. Query settings live under `[site]`; CPU is the default.
 The query model is cached and guarded by a lock.
+
+The active index is `data/indexes/lancedb-v2`; the older `lancedb` directory
+is retained separately. When rebuilding to a new path, stop embedding workers,
+configure that path, and use `uv run university-news-db enqueue-backfill
+--stage embed --reindex` to enqueue accepted articles including completed or
+failed embedding jobs. Existing queued/running jobs are not reset. Restart one
+embedding worker; its state is updated after each successful write. The current
+configuration uses two CPU threads because the shared GPU is occupied; a full
+corpus rebuild can take many days. Recheck GPU capacity before changing it.
 
 The index contract now includes the actual GGUF SHA-256, dimensions, cosine
 metric, pooling, query instruction, and document context. Query context may be
@@ -54,6 +61,9 @@ PostgreSQL ID resolution every `[site].semantic_health_interval_seconds` (60).
 indexed/unindexed rows, ANN availability, and embedding/search timings. An empty
 fresh index is `awaiting_data`, not ready. A failed real user query marks
 semantic health failed immediately; BM25 continues to serve results.
+`coverage_estimate` compares LanceDB row count with published PostgreSQL rows;
+it is an estimate, not proof that every ID matches. `/healthz` reports degraded
+while that estimate is incomplete, even though `/readyz` can serve searches.
 
 `/readyz` returns 503 when hybrid mode is configured but semantic retrieval has
 not passed its probe, has expired, or lacks ANN at a corpus size requiring it.
