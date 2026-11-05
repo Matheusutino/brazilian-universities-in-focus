@@ -174,8 +174,6 @@ def export(store: PostgresStore, data_root: Path) -> dict[str, object]:
     counts: dict[str, int] = {}
     for site in sorted(SITES):
         records = store.accepted_articles(site)
-        if not records:
-            continue
         target = sites_directory(data_root) / site / PREPROCESSED_ARTICLES_FILENAME
         atomic_write_jsonl(target, records)
         counts[site] = len(records)
@@ -184,7 +182,6 @@ def export(store: PostgresStore, data_root: Path) -> dict[str, object]:
         "sites": counts,
         "compiled_articles": compiled.articles,
         "compiled_output": compiled.output,
-        "site_output": compiled.site_output,
     }
 
 

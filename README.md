@@ -33,7 +33,7 @@ Yet this material is hard to study at scale:
 
 This repository addresses that gap. It began with the news portals of four of
 Brazil's top-ranked universities (USP, UNICAMP, UFRJ, and UNESP) and now covers
-19 universities across all five regions of the country, with more than 128,000
+20 configured university portals across all five regions of the country, with more than 128,000
 articles.
 
 ## What the corpus enables
@@ -58,15 +58,18 @@ intelligent systems.
 | Collection | asynchronous discovery and fetching from official university portals, with structured article extraction |
 | Preprocessing | field validation, Portuguese language detection, URL deduplication, and an auditable rejection log |
 | Enrichment | LLM-generated metadata (summary, classification, topics, entities, research, societal impact, communication style), validated against a JSON Schema |
-| Search | SQLite FTS5 (BM25) combined with approximate vector search over local Qwen3 embeddings through Reciprocal Rank Fusion |
+| Search | PostgreSQL + pg_search (BM25) combined with LanceDB vector search over local Qwen3 embeddings through Reciprocal Rank Fusion |
 | Operations | a PostgreSQL-backed durable queue with resumable, audited runs for collection and enrichment |
 | Website | static pages plus a small search API, built to run on a modest server |
+
+Production workers persist raw HTML and structured records directly in PostgreSQL;
+only the vector index lives in LanceDB. HTML/JSON files are optional offline outputs.
 
 Universities currently covered:
 
 | Region | Universities |
 | --- | --- |
-| Norte | UFPA, UFT |
+| Norte | UFAM, UFPA, UFT |
 | Nordeste | UFAL, UFC |
 | Centro-Oeste | UnB, UFMS |
 | Sudeste | USP, UNICAMP, UNESP, UFRJ, UERJ, UFABC, UFMG, UFLA, UNIFESP |
@@ -80,13 +83,22 @@ GPU with the CUDA toolchain for GPU-accelerated embeddings.
 ```bash
 uv sync --dev
 cp .env.example .env                       # add only the API keys you need
+# Start PostgreSQL with pg_search; configure DATABASE_URL in .env.
+POSTGRES_PASSWORD=choose-one docker compose up -d --build
 
-uv run university-news usp --stage all     # collect one university
-uv run university-news-preprocess --data-root data --workers 8
-uv run university-news-index --recreate    # build the semantic index
-uv run university-news-site build        # pages and search bundle
+uv run university-news-site init-search  # PostgreSQL migrations + BM25 index; requires pg_search
+uv run university-news-daily --sites usp  # URLs and jobs go directly into PostgreSQL
+uv run university-news-worker --stages fetch extract preprocess --exit-when-empty
+uv run university-news-worker --stages enrich --exit-when-empty
+uv run university-news-worker --stages embed --exit-when-empty
+uv run university-news-site build        # static pages from PostgreSQL
 uv run university-news-site serve        # http://127.0.0.1:8501
 ```
+
+For a new full collection, use `university-news-daily --max-pages 4000`
+instead of importing old JSON files. The historical/offline `university-news`,
+`university-news-all`, preprocessing, and file enrichment commands remain
+explicit file-based tools; they are not the production ingestion path.
 
 ## Documentation
 

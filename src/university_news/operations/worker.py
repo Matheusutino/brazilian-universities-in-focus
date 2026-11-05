@@ -22,7 +22,7 @@ from ..paths import DEFAULT_DATA_ROOT
 from ..settings import config_section
 from ..enrichment.client import SUPPORTED_PROVIDERS, ClippingEnricher
 from .handlers import StageHandlers, WorkerStageError, load_enricher
-from .store import JOB_STAGES, PostgresStore
+from .store import JOB_STAGES, Job, LeaseLostError, PostgresStore
 
 
 class LeaseHeartbeat:
@@ -32,14 +32,12 @@ class LeaseHeartbeat:
         self,
         store: PostgresStore,
         *,
-        job_id: int,
-        worker_id: str,
+        job: Job,
         lease_seconds: int,
         heartbeat_seconds: float,
     ) -> None:
         self.store = store
-        self.job_id = job_id
-        self.worker_id = worker_id
+        self.job = job
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self._stop = threading.Event()
@@ -59,19 +57,18 @@ class LeaseHeartbeat:
         while not self._stop.wait(self.heartbeat_seconds):
             try:
                 renewed = self.store.renew_lease(
-                    self.job_id,
-                    self.worker_id,
+                    self.job,
                     self.lease_seconds,
                 )
             except Exception as exc:  # noqa: BLE001
                 print(
-                    f"job={self.job_id} heartbeat failed: "
+                    f"job={self.job.id} heartbeat failed: "
                     f"{type(exc).__name__}: {exc}",
                     flush=True,
                 )
                 continue
             if not renewed:
-                print(f"job={self.job_id} lease ownership was lost", flush=True)
+                print(f"job={self.job.id} lease ownership was lost", flush=True)
                 return
 
 
@@ -104,6 +101,7 @@ def work(
     run_id: uuid.UUID | None = None,
     stop: threading.Event | None = None,
     transient_backoff_seconds: float = 30.0,
+    heartbeat_store: PostgresStore | None = None,
 ) -> dict[str, int]:
     """Claim and process jobs until the queue empties, a limit, or a stop request.
 
@@ -134,17 +132,19 @@ def work(
         )
         try:
             with LeaseHeartbeat(
-                store,
-                job_id=job.id,
-                worker_id=worker_id,
+                heartbeat_store or store,
+                job=job,
                 lease_seconds=lease_seconds,
                 heartbeat_seconds=heartbeat_seconds,
             ):
                 next_stages = handlers.process(job)
+        except LeaseLostError:
+            print(f"job={job.id} discarded: lease ownership was lost", flush=True)
+            continue
         except Exception as exc:  # noqa: BLE001
             transient = is_transient(exc)
             error_details = getattr(handlers, "error_details", None)
-            store.fail_job(
+            recorded = store.fail_job(
                 job,
                 exc,
                 transient=transient,
@@ -152,6 +152,9 @@ def work(
                 run_id=run_id,
                 details=error_details(job, exc) if error_details else None,
             )
+            if recorded is False:
+                print(f"job={job.id} failure discarded: lease ownership was lost", flush=True)
+                continue
             stats["retried" if transient and job.attempts < max_attempts else "failed"] += 1
             print(f"job={job.id} failed: {type(exc).__name__}: {exc}", flush=True)
             if transient:
@@ -164,7 +167,9 @@ def work(
             else:
                 consecutive_transient = 0
         else:
-            store.complete_job(job, next_stages)
+            if store.complete_job(job, next_stages) is False:
+                print(f"job={job.id} completion discarded: lease ownership was lost", flush=True)
+                continue
             stats["completed"] += 1
             consecutive_transient = 0
     return stats
@@ -227,7 +232,9 @@ def run_one_worker(
     stop: threading.Event,
 ) -> dict[str, int]:
     store = PostgresStore.open(dsn)
+    heartbeat_store = None
     try:
+        heartbeat_store = PostgresStore.open(dsn)
         return work(
             store,
             StageHandlers(store, args.data_root, enricher=enricher, run_id=run_id),
@@ -241,8 +248,11 @@ def run_one_worker(
             exit_when_empty=args.exit_when_empty,
             run_id=run_id,
             stop=stop,
+            heartbeat_store=heartbeat_store,
         )
     finally:
+        if heartbeat_store is not None:
+            heartbeat_store.close()
         store.close()
 
 

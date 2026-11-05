@@ -1,4 +1,4 @@
-"""Build the public website: data bundle plus static HTML pages."""
+"""Build static pages from a consistent PostgreSQL metadata snapshot."""
 
 from __future__ import annotations
 
@@ -9,15 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..paths import combined_enrichments_directory, compiled_site_articles_path
-from .bundle import (
-    DATABASE_FILENAME,
-    build_database,
-    deduplicate_keywords,
-    load_annotations,
-    load_articles,
-    site_statistics,
-)
+import pandas as pd
+
+from .search import ArticleIndex
+from .statistics import deduplicate_keywords, site_statistics
 from .criteria import SCALES, criteria_for_page, sdg_list
 from .labels import LABELS
 from .render import STATIC, labels_json, make_environment
@@ -106,31 +101,19 @@ def facets(stats: dict[str, Any]) -> dict[str, list[tuple[str, str]]]:
 def build_site(
     output: Path,
     *,
-    articles_path: Path,
-    annotations_path: Path | None,
-    manifest_path: Path | None = None,
+    index: ArticleIndex,
 ) -> BuildResult:
     started = time.perf_counter()
-    articles = load_articles(articles_path)
-    annotations = load_annotations(annotations_path)
+    records, profiles = index.publication_snapshot()
+    articles = pd.DataFrame(records, columns=[
+        "id", "url", "title", "subtitle", "author", "date", "journal", "region"
+    ])
+    annotations = {
+        row["url"]: row["annotation"] for row in records if row["annotation"]
+    }
     deduplicate_keywords(annotations)
-    manifest = (
-        json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest_path and manifest_path.is_file()
-        else {}
-    )
-    profiles = [
-        {key: profile.get(key) for key in ("id", "provider", "model", "schema_version", "prompt_sha256", "annotations")}
-        for profile in manifest.get("profiles", [])
-    ]
     version = str(int(time.time()))
     stats = site_statistics(articles, annotations)
-    bundle = build_database(
-        articles,
-        annotations,
-        output / DATABASE_FILENAME,
-        meta={"version": version, "profiles": profiles, "built_at": time.time()},
-    )
     latest = [
         {
             "id": row["id"],
@@ -143,7 +126,7 @@ def build_site(
             "region": row["region"],
             "analysis": None,
         }
-        for row in _latest_rows(output / DATABASE_FILENAME, 6)
+        for row in [record for record in records if record["date"]][:6]
     ]
 
     environment = make_environment()
@@ -179,31 +162,19 @@ def build_site(
             environment.get_template(template).render(**context, **extra), encoding="utf-8"
         )
     shutil.copytree(STATIC, staging / "static")
-    (output / STATS_FILENAME).write_text(
-        json.dumps({key: value for key, value in stats.items() if key != "analysis"}, ensure_ascii=False),
+    # Metadata belongs to this release of the pages, not a separate data bundle.
+    (staging / STATS_FILENAME).write_text(
+        json.dumps({**{key: value for key, value in stats.items() if key != "analysis"}, "version": version}, ensure_ascii=False),
         encoding="utf-8",
     )
     _swap_directory(staging, output / PUBLIC_DIRECTORY)
     return BuildResult(
         directory=str(output),
-        articles=bundle.articles,
-        annotated=bundle.annotated,
+        articles=len(records),
+        annotated=len(annotations),
         pages=len(pages),
         seconds=round(time.perf_counter() - started, 1),
     )
-
-
-def _latest_rows(database: Path, limit: int) -> list[dict[str, Any]]:
-    import sqlite3
-
-    with sqlite3.connect(database) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            "SELECT id, url, title, subtitle, author, date, journal, region FROM articles "
-            "WHERE date IS NOT NULL ORDER BY date DESC, rowid LIMIT ?",
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
 
 
 def _swap_directory(staging: Path, target: Path) -> None:
@@ -216,13 +187,4 @@ def _swap_directory(staging: Path, target: Path) -> None:
     shutil.rmtree(previous, ignore_errors=True)
 
 
-def default_sources(data_root: Path) -> dict[str, Path | None]:
-    combined = combined_enrichments_directory(data_root)
-    return {
-        "articles_path": compiled_site_articles_path(data_root),
-        "annotations_path": combined / "annotations.parquet",
-        "manifest_path": combined / "manifest.json",
-    }
-
-
-__all__ = ["LABELS", "BuildResult", "build_site", "default_sources"]
+__all__ = ["LABELS", "BuildResult", "build_site"]

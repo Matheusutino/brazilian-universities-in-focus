@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish university-news snapshots hourly
+Description=Rebuild university-news static pages hourly
 
 [Timer]
 OnCalendar=hourly

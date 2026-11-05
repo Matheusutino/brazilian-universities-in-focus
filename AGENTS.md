@@ -2,17 +2,18 @@
 
 ## Project Structure & Module Organization
 
-Application code lives in `src/university_news/`. Key packages are `pipeline/` for collection and preprocessing, `enrichment/` for LLM metadata, `search/` for retrieval, `site/` for the public website (static pages, search API, and data bundle), and `operations/` for the PostgreSQL queue. Shared helpers belong in `shared/`; university definitions belong in `sources/`. Tests are in `tests/test_*.py`, settings and schemas in `config/`, implementation docs in `doc/`, and deployment utilities in `scripts/` and `deploy/systemd/`. Treat `data/`, `.env`, and generated service files as uncommitted runtime artifacts.
+Application code lives in `src/university_news/`. Key packages are `pipeline/` for collection and preprocessing, `enrichment/` for LLM metadata, `search/` for LanceDB retrieval, `site/` for static pages and the PostgreSQL search API, and `operations/` for the PostgreSQL queue. Shared helpers belong in `shared/`; university definitions belong in `sources/`. Tests are in `tests/test_*.py`, settings and schemas in `config/`, implementation docs in `doc/`, and deployment utilities in `scripts/` and `deploy/`. Treat `data/`, `.env`, and generated service files as uncommitted runtime artifacts.
 
 ## Build, Test, and Development Commands
 
 - `uv sync --dev`: create/update the Python 3.12 environment and install test dependencies.
 - `uv run pytest`: run the complete test suite.
 - `uv run pytest tests/test_fetching.py -q`: run one focused test module.
-- `TEST_DATABASE_URL=... uv run pytest tests/test_postgres_store.py`: run PostgreSQL integration tests (the database is wiped).
+- `TEST_DATABASE_URL=... uv run pytest tests/test_postgres_store.py tests/test_site.py`: run integration tests against dedicated PostgreSQL with pg_search 0.26.4+ (the database is wiped).
 - `uv run university-news usp --stage all`: collect and extract one configured university.
 - `uv run university-news-preprocess --data-root data --workers 8`: clean and compile collected articles.
 - `uv run university-news-site build && uv run university-news-site serve`: build and serve the website locally.
+- `uv run university-news-site init-search`: apply migrations and create BM25 indexes using `DATABASE_URL`; the server must have pg_search preloaded.
 - `uv run university-news-config enrichment provider`: inspect a configured setting.
 
 GPU indexing builds `llama-cpp-python` with CUDA settings from `pyproject.toml`; contributors without CUDA should avoid rebuilding that dependency unless necessary.

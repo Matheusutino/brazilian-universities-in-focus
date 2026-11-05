@@ -10,7 +10,7 @@
 | [search.md](search.md) | Qwen3 embeddings, LanceDB index, hybrid retrieval with RRF |
 | [database.md](database.md) | PostgreSQL setup, schema and migrations, job lifecycle, recovery, transparency, commands, runbook |
 | [operations.md](operations.md) | daily cycle, workers, systemd services |
-| [site.md](site.md) | public website: pages, search for small servers, API, data bundle, deployment |
+| [site.md](site.md) | public website: static pages, live PostgreSQL API, BM25, LanceDB, deployment |
 
 Contributor conventions (style, tests, commits) are in
 [`AGENTS.md`](../AGENTS.md).

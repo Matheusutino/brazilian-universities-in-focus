@@ -38,16 +38,12 @@ def enrichment_export_directory(data_root: Path, profile_ids: list[str]) -> Path
 
 
 def combined_enrichments_directory(data_root: Path) -> Path:
-    """Default export of every configured provider; read by the website."""
+    """Default research export of every configured provider."""
     return data_root / "enriched" / "combined"
 
 
 def compiled_articles_path(data_root: Path) -> Path:
     return compiled_directory(data_root) / "articles.json"
-
-
-def compiled_site_articles_path(data_root: Path) -> Path:
-    return compiled_directory(data_root) / "site_articles.parquet"
 
 
 def compiled_manifest_path(data_root: Path) -> Path:

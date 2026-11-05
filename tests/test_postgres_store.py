@@ -11,8 +11,9 @@ import pandas as pd
 import pytest
 
 from university_news.operations.database_schema import BASE_SCHEMA_SQL
+from university_news.operations.database_schema import MIGRATIONS
 from university_news.operations.enrichment_export import export_enrichments
-from university_news.operations.store import PostgresStore
+from university_news.operations.store import LeaseLostError, PostgresStore
 from university_news.operations.worker import work
 
 DSN = os.getenv("TEST_DATABASE_URL", "").strip()
@@ -79,9 +80,272 @@ def seed_articles(store: PostgresStore, count: int) -> list[uuid.UUID]:
 
 
 def test_migrations_apply_once_and_record_their_versions(store) -> None:
-    assert store.initialize() == [1, 2, 3]
+    assert store.initialize() == [1, 2, 3, 4, 5, 6]
     assert store.initialize() == []
-    assert store.schema_version() == 3
+    assert store.schema_version() == 6
+
+
+def test_lease_migration_preserves_existing_jobs_and_reclaims_expired_claims(store):
+    store.connection.execute(
+        "CREATE TABLE schema_migrations (version integer PRIMARY KEY, description text)"
+    )
+    for version, description, sql in MIGRATIONS[:5]:
+        store.connection.execute(sql)
+        store.connection.execute(
+            "INSERT INTO schema_migrations VALUES (%s, %s)", (version, description)
+        )
+    store.register_source("usp", "https://jornal.usp.br/")
+    store.add_discovered_urls("usp", ["https://jornal.usp.br/old"], run_id=None, page=1)
+    store.connection.execute(
+        "UPDATE processing_jobs SET status = 'running', worker_id = 'old', "
+        "lease_expires_at = clock_timestamp() - interval '1 second'"
+    )
+    assert store.initialize() == [6]
+    job = store.claim_job(["fetch"], worker_id="new", lease_seconds=60)
+    assert job.worker_id == "new" and job.lease_token is not None
+    assert store.complete_job(job, ["extract"])
+
+
+def test_stale_attempt_cannot_renew_write_fail_or_complete_even_with_same_worker_id(
+    store, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from university_news.operations import handlers as handlers_module
+
+    identifier = seed_articles(store, 1)[0]
+    assert store.enqueue_embedding_backfill(limit=None) == 1
+    stale = store.claim_job(["embed"], worker_id="same", lease_seconds=60)
+    store.connection.execute(
+        "UPDATE processing_jobs SET lease_expires_at = clock_timestamp() - interval '1 second' "
+        "WHERE id = %s", (stale.id,),
+    )
+    assert not store.renew_lease(stale, 60)
+    current = store.claim_job(["embed"], worker_id="same", lease_seconds=60)
+    assert current.lease_token != stale.lease_token
+    assert current.attempts == stale.attempts + 1
+    assert not store.renew_lease(stale, 60)
+    assert not store.complete_job(stale, ["enrich"])
+    assert not store.fail_job(stale, ValueError("stale"), transient=False, max_attempts=3)
+    with pytest.raises(LeaseLostError):
+        with store.lease_guard(stale):
+            store.save_article(identifier, site="usp", url=stale.url,
+                               status="rejected", payload={})
+    assert store.get_article(identifier)["title"] == "Notícia"
+    assert store.recent_errors() == []
+    assert store.connection.execute(
+        "SELECT count(*) AS n FROM processing_jobs WHERE stage = 'enrich'"
+    ).fetchone()["n"] == 0
+
+    calls = []
+    handler = handlers_module.StageHandlers(store, tmp_path)
+    handler._embedder = SimpleNamespace(
+        encode_documents=lambda docs: SimpleNamespace(vectors=[[1.0]], truncated=[False]),
+        model_repo="repo", model_file="model",
+    )
+    handler._lance_table = object()
+    monkeypatch.setattr(handlers_module, "index_records", lambda *_args: calls.append(True))
+    with pytest.raises(LeaseLostError):
+        handler.embed(stale)
+    assert calls == []
+    assert store.complete_job(current)
+
+
+def test_lease_guard_blocks_reclaim_until_fenced_side_effect_finishes(store):
+    seed_articles(store, 1)
+    store.enqueue_embedding_backfill(limit=None)
+    job = store.claim_job(["embed"], worker_id="first", lease_seconds=1)
+    other = PostgresStore.open(DSN)
+    try:
+        with store.lease_guard(job):
+            # Let the committed lease expire while a fenced write holds its row lock.
+            store.connection.execute("SELECT pg_sleep(1.1)")
+            assert other.claim_job(["embed"], worker_id="second", lease_seconds=60) is None
+        claimed = other.claim_job(["embed"], worker_id="second", lease_seconds=60)
+        assert claimed is not None and claimed.lease_token != job.lease_token
+    finally:
+        other.close()
+
+
+def test_heartbeat_waiting_for_row_lock_cannot_revive_expired_lease(store):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    seed_articles(store, 1)
+    store.enqueue_embedding_backfill(limit=None)
+    job = store.claim_job(["embed"], worker_id="first", lease_seconds=1)
+    heartbeat = PostgresStore.open(DSN)
+    started = threading.Event()
+    def renew():
+        started.set()
+        return heartbeat.renew_lease(job, 60)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with store.lease_guard(job):
+                result = executor.submit(renew)
+                assert started.wait(1)
+                store.connection.execute("SELECT pg_sleep(1.1)")
+            assert result.result(timeout=5) is False
+    finally:
+        heartbeat.close()
+
+
+def test_raw_document_round_trip_updates_and_rejects_empty_content(store):
+    import hashlib
+
+    identifier = seed_articles(store, 1)[0]
+    with pytest.raises(KeyError, match="fetch again"):
+        store.get_raw_document(identifier)
+    content = "<html>Educação</html>".encode("iso-8859-1")
+    store.save_raw_document(
+        identifier, content=content, status_code=200, encoding="iso-8859-1",
+        content_type="text/html; charset=iso-8859-1", final_url="https://jornal.usp.br/new",
+    )
+    row = store.get_raw_document(identifier)
+    assert bytes(row["content"]) == content
+    assert row["sha256"] == hashlib.sha256(content).hexdigest()
+    assert row["encoding"] == "iso-8859-1"
+    assert row["status_code"] == 200
+    assert row["content_type"] == "text/html; charset=iso-8859-1"
+    assert row["final_url"] == "https://jornal.usp.br/new"
+    assert row["fetched_at"] is not None
+    replacement = b"<html>Updated</html>"
+    store.save_raw_document(identifier, content=replacement, status_code=200)
+    assert bytes(store.get_raw_document(identifier)["content"]) == replacement
+    with pytest.raises(ValueError, match="must not be empty"):
+        store.save_raw_document(identifier, content=b"", status_code=200)
+    assert bytes(store.get_raw_document(identifier)["content"]) == replacement
+    assert store.connection.execute("SELECT count(*) AS n FROM raw_documents").fetchone()["n"] == 1
+
+
+def test_raw_content_migration_preserves_legacy_paths_without_filesystem_import(store):
+    store.connection.execute(
+        "CREATE TABLE schema_migrations (version integer PRIMARY KEY, description text)"
+    )
+    for version, description, sql in MIGRATIONS[:4]:
+        store.connection.execute(sql)
+        store.connection.execute(
+            "INSERT INTO schema_migrations VALUES (%s, %s)", (version, description)
+        )
+    store.register_source("usp", "https://jornal.usp.br/")
+    ids = store.add_discovered_urls("usp", ["https://jornal.usp.br/legacy"], run_id=None, page=1)
+    identifier = ids[0]
+    store.connection.execute(
+        "INSERT INTO raw_documents (article_id, path, sha256) VALUES (%s, %s, %s)",
+        (identifier, "sites/usp/raw/legacy.html", "legacy-hash"),
+    )
+    assert store.initialize() == [5, 6]
+    row = store.connection.execute("SELECT * FROM raw_documents").fetchone()
+    assert row["path"] == "sites/usp/raw/legacy.html"
+    assert row["sha256"] == "legacy-hash"
+    assert row["content"] is None
+    with pytest.raises(KeyError, match="fetch again"):
+        store.get_raw_document(identifier)
+    store.save_raw_document(identifier, content=b"<html>New</html>", status_code=200)
+    row = store.connection.execute("SELECT * FROM raw_documents").fetchone()
+    assert row["path"] is None
+    assert bytes(row["content"]) == b"<html>New</html>"
+
+
+def test_production_stages_persist_directly_to_postgres_without_article_json(
+    store, tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    import httpx
+
+    from university_news.operations import handlers as handlers_module
+    from university_news.pipeline.fetching import ContentFetcher
+
+    store.initialize()
+    store.register_source("usp", "https://jornal.usp.br/")
+    url = "https://jornal.usp.br/ciencias/noticia-nova/"
+    identifiers = store.add_discovered_urls("usp", [url], run_id=None, page=1)
+    identifier = identifiers[0]
+    store.register_enrichment_profile(profile("direct"))
+    html = """<html><head>
+      <title>Pesquisa universitária apresenta resultados científicos</title>
+      <meta name="author" content="Ana da Silva">
+      <meta property="article:published_time" content="2026-11-04T08:00:00">
+      </head><body><main id="main"><article>
+      <h1>Pesquisa universitária apresenta resultados científicos</h1>
+      <p>Uma equipe de pesquisadores da universidade apresentou resultados de um
+      estudo científico sobre saúde pública. O projeto investiga novas tecnologias
+      para melhorar a prevenção de doenças e o atendimento à população brasileira.</p>
+      <p>Os cientistas realizaram experimentos com diferentes métodos de análise.
+      Os resultados foram discutidos em um encontro de pesquisadores e serão
+      publicados para ampliar o acesso ao conhecimento produzido na instituição.</p>
+      </article></main></body></html>"""
+    content = html.encode("iso-8859-1")
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, content=content,
+        headers={"Content-Type": "text/html; charset=iso-8859-1"},
+    ))
+    class LocalFetcher(ContentFetcher):
+        def __init__(self, site, **kwargs):
+            super().__init__(site, transport=transport, **kwargs)
+
+    monkeypatch.setattr(handlers_module, "ContentFetcher", LocalFetcher)
+    enricher = SimpleNamespace(
+        profile=SimpleNamespace(id="direct"),
+        enrich=lambda article, **kwargs: annotation(article["url"], "direct"),
+    )
+    handlers = handlers_module.StageHandlers(store, tmp_path, enricher=enricher)
+    handlers._detector = SimpleNamespace(is_portuguese=lambda text: True)
+    completed = []
+    while job := store.claim_job(
+        ["fetch", "extract", "preprocess", "enrich"], worker_id="direct", lease_seconds=60
+    ):
+        if job.stage == "extract":
+            # Another worker, with no shared directory or in-memory response.
+            extractor_worker = handlers_module.StageHandlers(store, tmp_path / "other-worker")
+            next_stages = extractor_worker.process(job)
+        else:
+            next_stages = handlers.process(job)
+        completed.append(job.stage)
+        store.complete_job(job, next_stages)
+
+    assert completed == ["fetch", "extract", "preprocess", "enrich"]
+    assert store.get_article(identifier)["author"] == "Ana da Silva"
+    assert "científicos" in store.get_article(identifier)["title"]
+    projected = store.connection.execute("SELECT * FROM site_documents").fetchone()
+    assert projected["summary"] == "Resumo direct"
+    assert projected["annotation"]["profile_id"] == "direct"
+    assert store.connection.execute("SELECT count(*) AS n FROM raw_documents").fetchone()["n"] == 1
+    raw = store.get_raw_document(identifier)
+    assert bytes(raw["content"]) == content
+    assert raw["encoding"] == "iso-8859-1"
+    assert raw["final_url"] == url
+    assert list(tmp_path.rglob("*.html")) == []
+    assert list(tmp_path.rglob("*.json")) == []
+    assert list(tmp_path.rglob("*.jsonl")) == []
+
+
+def test_site_migration_backfills_existing_articles_and_annotations(store) -> None:
+    # Simulate an already deployed v3 database, not only an empty fresh install.
+    store.connection.execute(
+        "CREATE TABLE schema_migrations (version integer PRIMARY KEY, description text)"
+    )
+    for version, description, sql in MIGRATIONS[:3]:
+        store.connection.execute(sql)
+        store.connection.execute(
+            "INSERT INTO schema_migrations VALUES (%s, %s)", (version, description)
+        )
+    store.register_source("usp", "https://jornal.usp.br/")
+    url = "https://jornal.usp.br/historica"
+    store.bootstrap_articles("usp", [{"url": url, "title": "Notícia histórica", "date": "2026-02-30"}])
+    store.register_enrichment_profile(profile("existing"))
+    from university_news.operations.identity import stable_article_id
+
+    identifier = stable_article_id(url)
+    store.save_enrichment(identifier, annotation(url, "existing"), profile_id="existing")
+
+    assert store.initialize() == [4, 5, 6]
+    row = store.connection.execute("SELECT * FROM site_documents").fetchone()
+    assert row["id"] == identifier
+    assert row["title"] == "Notícia histórica"
+    assert row["date"] is None
+    assert row["summary"] == "Resumo existing"
+    assert row["annotation"]["profile_id"] == "existing"
 
 
 def test_profiles_keep_exact_prompts_and_contract(store) -> None:

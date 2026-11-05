@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Iterable
@@ -35,21 +36,41 @@ class ArticleStoreMixin:
         self,
         article_id: uuid.UUID,
         *,
-        path: str,
-        sha256: str,
+        content: bytes,
         status_code: int | None,
+        encoding: str = "utf-8",
+        content_type: str | None = None,
+        final_url: str | None = None,
     ) -> None:
+        if not content:
+            raise ValueError("Raw document content must not be empty")
+        digest = hashlib.sha256(content).hexdigest()
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO raw_documents (article_id, path, sha256, status_code)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO raw_documents
+                    (article_id, content, sha256, status_code, encoding, content_type, final_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (article_id) DO UPDATE
-                SET path = EXCLUDED.path, sha256 = EXCLUDED.sha256,
-                    status_code = EXCLUDED.status_code, fetched_at = now()
+                SET path = NULL, content = EXCLUDED.content, sha256 = EXCLUDED.sha256,
+                    status_code = EXCLUDED.status_code, encoding = EXCLUDED.encoding,
+                    content_type = EXCLUDED.content_type, final_url = EXCLUDED.final_url,
+                    fetched_at = now()
                 """,
-                (article_id, path, sha256, status_code),
+                (article_id, content, digest, status_code, encoding, content_type, final_url),
             )
+
+    def get_raw_document(self, article_id: uuid.UUID) -> dict[str, Any]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT content, sha256, status_code, encoding, content_type, final_url, "
+                "fetched_at FROM raw_documents WHERE article_id = %s",
+                (article_id,),
+            )
+            row = cursor.fetchone()
+        if row is None or row["content"] is None:
+            raise KeyError(f"Raw HTML not stored in PostgreSQL; fetch again: {article_id}")
+        return dict(row)
 
     def save_article(
         self,

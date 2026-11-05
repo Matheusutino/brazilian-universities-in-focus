@@ -1,138 +1,111 @@
 # Public website
 
-The website is built for a small server: most pages are static HTML generated at
-publication time, and one small Python process serves them together with the
-search API. The server never loads the corpus into memory and does not need
-PostgreSQL or a GPU.
+The site uses two databases: PostgreSQL for live articles, annotations,
+filters, and BM25; LanceDB for semantic retrieval. Static pages are generated
+from PostgreSQL. The web server needs database access and the local query
+embedding model for hybrid search.
+
+## Setup and migration
+
+The PostgreSQL server must have ParadeDB `pg_search >= 0.26.4` and its
+`vector` extension dependency installed, with `pg_search` in
+`shared_preload_libraries`. The vector dependency does not move embeddings
+out of LanceDB. The Compose image builds these extensions for PostgreSQL 16
+on amd64:
 
 ```bash
-uv run university-news-site build     # pages + data bundle, from the published exports
-uv run university-news-site serve     # http://127.0.0.1:8501
-./scripts/start_site.sh               # build, then serve in the background (PID and log in data/logs/)
+POSTGRES_PASSWORD=... docker compose up -d --build
+uv sync --dev
+uv run university-news-site init-search
+uv run university-news-site build
+uv run university-news-site serve
 ```
 
-The systemd user service `university-news-site` does the same, and the hourly
-publish service rebuilds the site after exporting new articles and
-annotations. Address, port, and query-model settings are under `[site]` in
-`config/settings.toml`.
+Use the existing PostgreSQL volume; do not remove it. Take and test a database
+backup before changing the server image. If PostgreSQL runs outside Docker,
+install extensions against the server's actual version first. The old portable
+PostgreSQL 16.2 binaries are too old for the tested pg_search binary; the
+integration suite was verified on PostgreSQL 16.15 with pg_search 0.26.4.
 
-## How it fits together
+`init-search` uses the writer `DATABASE_URL`, applies migration 4, backfills
+existing accepted articles, and creates the BM25 index. It is an explicit
+deployment step, never performed by API requests. For a fresh database, import
+the historical corpus with `university-news-db import-existing-data` first.
+File-only LLM annotations must be imported through a deliberate data migration
+before retiring those exports; they are not automatically loaded by the site.
 
-```text
-publication (lab machine, hourly)                    small server
-  site_articles.parquet ┐
-  enrichments (combined)     ├─► university-news-site build ─► data/site/
-  manifest.json              ┘       ├── public/      static pages, CSS, JS, logos
-                                     ├── site.sqlite  articles + annotations + FTS5 index
-                                     └── stats.json
-                                                     university-news-site serve
-                                                       ├── /                 static files
-                                                       ├── /noticia/<id>     article page (rendered on request)
-                                                       └── /api/articles     listing and search (JSON)
+The website uses `SITE_DATABASE_URL`, falling back to `DATABASE_URL`. Prefer
+a separate role with only schema usage and SELECT on `site_documents` and
+`enrichment_profiles`. The connection pool additionally enforces read-only
+sessions, a statement timeout, and a configurable maximum connection count:
+
+```sql
+GRANT USAGE ON SCHEMA public, paradedb, pdb TO university_news_site;
+GRANT SELECT ON site_documents, enrichment_profiles TO university_news_site;
 ```
 
-`data/indexes/lancedb` (the vector index) must also be present on the server
-for semantic search. Copy `data/site/` and the LanceDB directory to deploy;
-nothing else from `data/` is needed.
+Create the role and its password through your normal credential-management
+process. Put the DSN in `.env`, never in versioned settings.
 
-## Pages
+## What changed
 
-| URL | Kind | Contents |
-| --- | --- | --- |
-| `/` | static | overview, search box, corpus figures, recent publications |
-| `/explorar/` | static + JS | search, filters (region, university, period, category, CNPq area, type, analyzed only), pagination; the state lives in the URL, so every search can be shared |
-| `/analises/` | static + JS | coverage and charts of the LLM annotations; switching the region or university redraws the charts from data embedded in the page, without a request |
-| `/universidades/` | static + JS | one card per university with its logo; each links to its news in Explorar |
-| `/criterios/` | static | every annotation field, its possible categories, and what each means (from `site/criteria.py`; a test keeps it equal to the contract) |
-| `/sobre/` | static | authorship and methodology |
-| `/noticia/<id>` | server-rendered | summary, classification, keywords, places, research, SDGs, entities, and provenance; cacheable and indexable |
+The site no longer reads or generates SQLite, article Parquet projections,
+or combined annotation exports. Old `site.sqlite`, `site.sqlite.tmp`,
+`site_articles.parquet`, `dashboard_articles.parquet`, and the former
+top-level `data/site/stats.json` are not used. Keep an archival copy until
+the PostgreSQL corpus/annotation counts and the new deployment are verified.
 
-Static pages cost almost no CPU: the server only sends files. The JavaScript is
-plain (no framework or build step) in `site/static/js/`.
+Only static pages need rebuilding. The hourly publish service now runs
+`university-news-site build`; article and annotation exports are optional
+research commands. Reinstall the systemd templates after updating. Rollback
+requires both the previous application version and the corresponding database
+backup; test restoration separately rather than dropping the production schema.
 
-## Search
+## Search and API
 
-`GET /api/articles?q=…` combines two rankings with Reciprocal Rank Fusion
-(k = 60):
+`GET /api/articles` accepts `q`, region, university, date bounds, category,
+CNPq field, content type, analyzed-only, mode, page, and page size.
 
-| Ranking | Engine | Cost |
-| --- | --- | --- |
-| Lexical | SQLite FTS5 with BM25 over title (×4), keywords (×2), subtitle (×1.5), and LLM summary; accents are ignored | milliseconds |
-| Semantic | Qwen3 query embedding + approximate nearest-neighbor search (IVF-HNSW, 8-bit) in LanceDB, with region, university, and date pushed into the index as a prefilter | the embedding dominates; ANN takes tens of ms |
+- BM25 weights title ×4, keywords ×2, subtitle ×1.5, and summary ×1.
+  ASCII folding makes accented and unaccented queries equivalent.
+- LanceDB prefilters university, region, and dates. The API checks every hit
+  against PostgreSQL and grows the candidate window for selective annotation
+  filters, up to 1,920 candidates.
+- RRF combines up to 60 candidates from each ranking. Search totals describe
+  retrieved candidates (`total_is_exact=false`); unqueried listings have an
+  exact count and deterministic pagination.
+- Query embeddings are cached. The model runs on CPU by default under a lock.
+  When semantic retrieval fails or is still loading, results fall back to BM25.
+- `--lexical-only` disables embeddings, not PostgreSQL or the BM25 index.
+- `GET /api/articles/{id}` returns an article and its selected annotation.
+- `GET /healthz` checks PostgreSQL and index availability, returns 503 on
+  database failure, and reports the periodically verified semantic status,
+  timestamps, row coverage, ANN availability, and timings. Query failures mark
+  semantics unhealthy even while BM25 remains available.
+- `GET /readyz` returns 503 until the configured hybrid service passes a real
+  embedding → LanceDB → published-article probe. Explicit lexical-only mode
+  only requires PostgreSQL/BM25. See [search.md](search.md) for diagnostics.
+- `/api/docs` documents the API.
 
-Choices made for weak hardware:
+Keep LanceDB and model files available to the API process. Static-only hosting
+is insufficient for search. Address, port, pool size, timeouts, and query model
+settings live under `[site]` in `config/settings.toml`.
 
-- **Only the query is embedded at search time.** Article vectors are computed
-  once, at indexing.
-- **Query embeddings are cached** (`query_cache_size`, LRU), so a repeated
-  search costs ~10 ms.
-- **The model runs on the CPU** by default (`query_gpu_layers = 0`,
-  `query_threads = 2`) behind a lock, because a llama.cpp context is not
-  thread-safe; concurrent searches queue instead of crashing the process.
-- **Progressive results.** The page requests `mode=lexical` and the hybrid
-  ranking at the same time, shows word matches immediately, and replaces them
-  when the hybrid ranking arrives.
-- **Graceful degradation.** The model loads in the background after start-up;
-  until it is ready, or if it fails, search answers lexically and the response
-  says so (`mode`, `notes`).
-- Every response reports `elapsed_ms` and per-stage `timings` (`lexical`,
-  `embedding`, `ann`), to tune the server once its hardware is known.
+## Pages and static builds
 
-`uv run university-news-site serve --lexical-only` skips the model entirely
-for the smallest machines. Set `mode = "lexical"` under `[search]` for the
-same effect from configuration.
+`/`, `/explorar/`, `/analises/`, `/universidades/`, `/criterios/`, and
+`/sobre/` are built as HTML. Article detail pages at `/noticia/{id}` read
+PostgreSQL on demand. Templates live in `site/templates/`; CSS and plain
+JavaScript live in `site/static/`.
 
-### API
+Charts use only the selected annotation per accepted article; profile counts
+reflect that same selection. Keyword variants are consolidated for aggregate
+charts. Raw annotation detail remains faithful to the persisted profile.
 
-| Endpoint | Parameters |
-| --- | --- |
-| `GET /api/articles` | `q`, `region`, `university`, `from`, `to` (YYYY-MM-DD), `category`, `field`, `type`, `analyzed`, `mode` (`hybrid` or `lexical`), `page`, `page_size` (≤ 48) |
-| `GET /api/articles/{id}` | full record with annotation |
-| `GET /healthz` | `{"ok": true, "semantic": <model loaded>}` |
-| `GET /api/docs` | interactive OpenAPI documentation |
+Generated pages and their `stats.json` are staged together under
+`data/site/public/`. Static charts reflect the last build, while API data is
+live. Deploy/rebuild without overlapping publishers and keep the last known
+working release available for rollback.
 
-Listings are cacheable for 5 minutes and searches for 1 minute
-(`Cache-Control`), so a reverse proxy or CDN in front absorbs repeated traffic.
-
-## Data bundle
-
-`site.sqlite` holds every article (URL, title, subtitle, author, date,
-university, region), its annotation as JSON, a few indexed annotation columns
-for filtering (category, content type, CNPq areas), and a contentless FTS5
-index. The build writes it to a temporary file and renames it, so readers never
-see a partial file, and the server reopens it when it changes. The static pages
-are swapped the same way.
-
-## Changing the site
-
-- Templates (Jinja2) are in `site/templates/`, styles in
-  `site/static/css/site.css`, and scripts in `site/static/js/`.
-- Charts are HTML bars that follow one rule set: one series per chart in the
-  brand green, thin bars with a rounded data end, values at the bar end, a
-  tooltip on hover or keyboard focus, and an optional table view. Ordered
-  scales (scientific centrality, hype, SDGs) keep their natural order.
-- University logos are in `site/static/logos/`, with source, author, and
-  license of each file in `CREDITS.json`. A university without a logo shows its
-  initials. To add or replace one, put the original image (named after the
-  site key, for example `ufc.png`) in a folder and normalize it:
-
-  ```bash
-  uv run --with pillow python scripts/normalize_logos.py ORIGINALS_DIR src/university_news/site/static/logos
-  ```
-
-  The script trims empty borders and places each logo on a square canvas at
-  the same visual area (wide logos use the full width), so every card shows a
-  logo of the same apparent size.
-
-## Keywords
-
-LLM keywords are deduplicated when the site is built (`site/keywords.py`):
-spellings that differ only in case, accents, punctuation, or Portuguese plural
-("Pós-Graduação", "pos_graduacao"; "processos seletivos", "processo seletivo")
-merge into the most frequent spelling in the corpus, repeated keywords within
-an article are removed, and the article's own university acronym is dropped
-(it describes the source, not the news). Article pages, search, and the
-keyword ranking on Análises all use the cleaned list; the raw annotations in
-the database are unchanged.
-- After changing templates, styles, or scripts, run `university-news-site
-  build`; after changing Python code, restart `serve`.
+University logos and provenance are in `site/static/logos/` and
+`CREDITS.json`. Missing logos fall back to institution initials.

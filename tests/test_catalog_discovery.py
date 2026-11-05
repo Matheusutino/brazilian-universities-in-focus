@@ -2,6 +2,9 @@ import httpx
 
 from university_news.sources.catalog import (
     UFAL,
+    UFAM,
+    SITES,
+    region_for_site,
     UFMS,
     UFPA,
     UFPR,
@@ -22,6 +25,40 @@ from university_news.sources.catalog import (
     USP,
 )
 from university_news.pipeline.discovery import UrlDiscovery
+
+
+async def test_ufam_offset_discovery_and_registration() -> None:
+    assert SITES["ufam"] is UFAM
+    assert region_for_site("ufam") == "Norte"
+    assert UFAM.page_url(0) == "https://www.ufam.edu.br/noticias.html"
+    assert UFAM.page_url(2150).endswith("?start=2150")
+    assert len(UFAM.page_values(0, 2150)) == 216
+    offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("start", "0"))
+        offsets.append(offset)
+        return httpx.Response(200, text=f"""
+          <form id="adminForm"><div class="tileItem">
+            <h2 class="tileHeadline">
+              <a href="/noticias/{offset}-pesquisa.html">Pesquisa</a>
+              <a href="/noticias/{offset}-pesquisa.html#texto">Repetida</a>
+              <a href="https://outro.edu.br/noticias/fora.html">Externa</a>
+            </h2>
+          </div><a href="/noticias.html?start=20">Próxima</a></form>
+          <footer><a href="/noticias/fora.html">Fora da listagem</a></footer>
+        """)
+
+    result = await UrlDiscovery(
+        UFAM, transport=httpx.MockTransport(handler)
+    ).discover(0, 20)
+
+    assert sorted(offsets) == [0, 10, 20]
+    assert result.errors == []
+    assert result.urls == {
+        f"https://www.ufam.edu.br/noticias/{offset}-pesquisa.html"
+        for offset in (0, 10, 20)
+    }
 
 
 def test_usp_page_urls() -> None:

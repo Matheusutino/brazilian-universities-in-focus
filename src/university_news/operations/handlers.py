@@ -9,9 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from ..enrichment.client import ClippingEnricher, EnrichmentSettings
 from ..enrichment.schema import ClippingSchema
-from ..paths import indexes_directory, sites_directory
+from ..paths import indexes_directory
 from ..pipeline.extraction import StructuredExtractor
 from ..pipeline.fetching import ContentFetcher
 from ..pipeline.preprocessing import (
@@ -31,8 +33,12 @@ from ..search.vector_index import (
     open_or_create_table,
     valid_date,
     write_metadata,
+    embedding_contract,
+    ensure_indexes,
+    ANN_MIN_ROWS,
 )
 from ..settings import config_section
+from ..shared.http_client import RetryableHttpStatus
 from ..sources.catalog import SITES, region_for_site
 from .store import Job, PostgresStore
 
@@ -88,48 +94,40 @@ class StageHandlers:
 
     def fetch(self, job: Job) -> tuple[str, ...]:
         site = SITES[job.site]
-        raw_directory = sites_directory(self.data_root) / job.site / "raw"
-        fetcher = ContentFetcher(site, raw_directory, concurrency=1)
-        result = asyncio.run(fetcher.fetch([job.url]))
-        if result.errors:
-            error = result.errors[0]
-            error_type = str(error.get("error") or "")
+        fetcher = ContentFetcher(site, concurrency=1)
+        try:
+            response = asyncio.run(fetcher.fetch_document(job.url))
+        except (httpx.HTTPError, RetryableHttpStatus) as error:
             raise WorkerStageError(
-                str(error.get("message") or error),
-                transient=error_type
-                in {"ConnectError", "ReadTimeout", "RetryableHttpStatus"},
+                str(error),
+                transient=isinstance(error, (httpx.TransportError, RetryableHttpStatus)),
+            ) from error
+        with self.store.lease_guard(job):
+            self.store.save_raw_document(
+                job.article_id,
+                content=response.content,
+                status_code=response.status_code,
+                encoding=response.encoding,
+                content_type=response.headers.get("content-type"),
+                final_url=str(response.url),
             )
-        raw_path = fetcher.path_for_url(job.url)
-        digest = hashlib.sha256(raw_path.read_bytes()).hexdigest()
-        status_code = (
-            int(result.manifest_records[0]["status_code"])
-            if result.manifest_records
-            else None
-        )
-        self.store.save_raw_document(
-            job.article_id,
-            path=str(raw_path.relative_to(self.data_root)),
-            sha256=digest,
-            status_code=status_code,
-        )
         return ("extract",)
 
     def extract(self, job: Job) -> tuple[str, ...]:
-        root = sites_directory(self.data_root) / job.site
-        extractor = StructuredExtractor(
-            root / "raw",
-            root / "articles.jsonl",
-            site=SITES[job.site],
+        document = self.store.get_raw_document(job.article_id)
+        html = bytes(document["content"]).decode(
+            document["encoding"] or "utf-8", errors="replace"
         )
-        raw_path = root / "raw" / ContentFetcher.filename_for_url(job.url)
-        article = extractor.extract_file(raw_path, job.url)
-        self.store.save_article(
-            job.article_id,
-            site=job.site,
-            url=job.url,
-            status="extracted",
-            payload=article,
-        )
+        extractor = StructuredExtractor(site=SITES[job.site])
+        article = extractor.extract_html(html, job.url)
+        with self.store.lease_guard(job):
+            self.store.save_article(
+                job.article_id,
+                site=job.site,
+                url=job.url,
+                status="extracted",
+                payload=article,
+            )
         return ("preprocess",)
 
     def preprocess(self, job: Job) -> tuple[str, ...]:
@@ -141,14 +139,15 @@ class StageHandlers:
         )
         if rejected:
             rejection = rejected[0]
-            self.store.save_article(
-                job.article_id,
-                site=job.site,
-                url=job.url,
-                status="rejected",
-                payload=dict(rejection["article"]),
-                rejection_reason=str(rejection["reason"]),
-            )
+            with self.store.lease_guard(job):
+                self.store.save_article(
+                    job.article_id,
+                    site=job.site,
+                    url=job.url,
+                    status="rejected",
+                    payload=dict(rejection["article"]),
+                    rejection_reason=str(rejection["reason"]),
+                )
             return ()
 
         processed = accepted[0]
@@ -160,14 +159,15 @@ class StageHandlers:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
-        self.store.save_article(
-            job.article_id,
-            site=job.site,
-            url=job.url,
-            status="accepted",
-            payload=processed,
-            content_hash=digest,
-        )
+        with self.store.lease_guard(job):
+            self.store.save_article(
+                job.article_id,
+                site=job.site,
+                url=job.url,
+                status="accepted",
+                payload=processed,
+                content_hash=digest,
+            )
         return ("enrich", "embed")
 
     def enrich(self, job: Job) -> tuple[str, ...]:
@@ -181,9 +181,10 @@ class StageHandlers:
         result = self._enricher.enrich(
             self.store.get_article(job.article_id), university=job.site
         )
-        self.store.save_enrichment(
-            job.article_id, result, profile_id=profile_id, run_id=self.run_id
-        )
+        with self.store.lease_guard(job):
+            self.store.save_enrichment(
+                job.article_id, result, profile_id=profile_id, run_id=self.run_id
+            )
         return ()
 
     def error_details(self, job: Job, error: Exception) -> dict[str, Any]:
@@ -201,43 +202,47 @@ class StageHandlers:
         content = article_content(article)
         if not content:
             raise ValueError("Article has no indexable content")
-        self._load_embedding_backend()
+        self._load_embedding_backend(job)
         assert self._embedder is not None
         assert self._lance_table is not None
         embedded = self._embedder.encode_documents([content])
         digest = indexed_hash(article, content)
-        index_records(
-            self._lance_table,
-            [
-                {
-                    "article_id": str(job.article_id),
-                    "content_hash": digest,
-                    "journal": job.site.upper(),
-                    "region": region_for_site(job.site),
-                    "date": valid_date(article.get("date")),
-                    "truncated": embedded.truncated[0],
-                    "vector": embedded.vectors[0],
-                }
-            ],
-        )
-        self.store.save_embedding_state(
-            job.article_id,
-            content_hash=content_hash(content),
-            model=f"{self._embedder.model_repo}/{self._embedder.model_file}",
-        )
-        # Each single-row write adds a table version; compact periodically so
-        # the index never grows into thousands of versions again.
-        self._embedded_since_compaction += 1
-        if self._embedded_since_compaction >= EMBED_COMPACTION_INTERVAL:
-            compact_table(self._lance_table)
-            self._embedded_since_compaction = 0
+        with self.store.lease_guard(job):
+            index_records(
+                self._lance_table,
+                [
+                    {
+                        "article_id": str(job.article_id),
+                        "content_hash": digest,
+                        "journal": job.site.upper(),
+                        "region": region_for_site(job.site),
+                        "date": valid_date(article.get("date")),
+                        "truncated": embedded.truncated[0],
+                        "vector": embedded.vectors[0],
+                    }
+                ],
+            )
+            self.store.save_embedding_state(
+                job.article_id,
+                content_hash=content_hash(content),
+                model=f"{self._embedder.model_repo}/{self._embedder.model_file}",
+            )
+            # Keep the job row locked during LanceDB mutations so another
+            # attempt cannot claim the job before this write completes.
+            self._embedded_since_compaction += 1
+            if self._lance_table.count_rows() == ANN_MIN_ROWS:
+                ensure_indexes(self._lance_table, rebuild=False)
+            if self._embedded_since_compaction >= EMBED_COMPACTION_INTERVAL:
+                ensure_indexes(self._lance_table, rebuild=False)
+                compact_table(self._lance_table)
+                self._embedded_since_compaction = 0
         return ()
 
-    def _load_embedding_backend(self) -> None:
+    def _load_embedding_backend(self, job: Job) -> None:
         if self._embedder is not None:
             return
         model_path = str(self._embedding_settings.get("model_path", "")).strip()
-        self._embedder = QwenGGUFEmbedder(
+        embedder = QwenGGUFEmbedder(
             model_path=Path(model_path) if model_path else None,
             model_repo=str(self._embedding_settings.get("model_repo")),
             model_file=str(self._embedding_settings.get("model_file")),
@@ -245,31 +250,30 @@ class StageHandlers:
             threads=int(self._embedding_settings.get("threads", 8)),
             gpu_layers=int(self._embedding_settings.get("gpu_layers", -1)),
         )
-        database = connect_database(self._lance_path)
-        self._lance_table = open_or_create_table(
-            database,
-            self._lance_table_name,
-            self._embedder.dimension,
-            recreate=False,
-        )
-        metadata = load_index_metadata(self._lance_path)
-        expected = {
-            "model_repo": self._embedder.model_repo,
-            "model_file": self._embedder.model_file,
-            "context_length": self._embedder.context_length,
-            "dimension": self._embedder.dimension,
-        }
-        mismatched = [
-            key for key, value in expected.items() if metadata.get(key) != value
-        ]
-        if self._lance_table.count_rows() and mismatched:
-            raise RuntimeError(
-                "Embedding configuration changed for the active LanceDB table "
-                f"({', '.join(mismatched)}). Select a new table explicitly; "
-                "existing articles will not be reprocessed automatically."
+        with self.store.lease_guard(job):
+            database = connect_database(self._lance_path)
+            table = open_or_create_table(
+                database,
+                self._lance_table_name,
+                embedder.dimension,
+                recreate=False,
             )
-        write_metadata(
-            self._lance_path,
-            table=self._lance_table_name,
-            embedder=self._embedder,
-        )
+            metadata = load_index_metadata(self._lance_path)
+            expected = embedding_contract(embedder, self._lance_table_name)
+            mismatched = [
+                key for key, value in expected.items() if metadata.get(key) != value
+            ]
+            if table.count_rows() and mismatched:
+                raise RuntimeError(
+                    "Embedding configuration changed for the active LanceDB table "
+                    f"({', '.join(mismatched)}). Select a new table explicitly; "
+                    "existing articles will not be reprocessed automatically."
+                )
+            if table.count_rows():
+                ensure_indexes(table, rebuild=False)
+            write_metadata(
+                self._lance_path, table=self._lance_table_name, embedder=embedder,
+            )
+        # Publish only a fully initialized and validated backend.
+        self._lance_table = table
+        self._embedder = embedder

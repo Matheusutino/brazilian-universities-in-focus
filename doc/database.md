@@ -2,14 +2,21 @@
 
 PostgreSQL is the source of truth for the durable pipeline. It records every
 article, every unit of work, every annotation, every run, and every failure.
-Any stage can stop at any moment and resume without losing or repeating paid
-work, and every result can be traced to the run and configuration that produced
-it.
+Jobs can be retried after interruption, and stored results can be traced to the
+run and configuration that produced them. A remote request may be repeated if
+the worker crashes or loses its lease before the result is committed.
 
 ## Setting up PostgreSQL
 
 Use one of the two options below. Both create the `university_news` database
 used by `DATABASE_URL`.
+
+The website now queries this same PostgreSQL database. Its BM25 search also
+requires pg_search 0.26.4+ and pgvector installed on the server, with pg_search
+preloaded. The portable bootstrap below initializes the pipeline database but
+does not install those extensions; its old PostgreSQL 16.2 binaries need an
+upgrade before using the tested pg_search package. See [site.md](site.md) for
+the website migration and the read-only role.
 
 **Without root or Docker access** (the setup used on the lab server):
 
@@ -41,17 +48,17 @@ location, socket directory, or port.
 **With Docker access:**
 
 ```bash
-POSTGRES_PASSWORD=choose-one docker compose up -d
+POSTGRES_PASSWORD=choose-one docker compose up -d --build
 # then set DATABASE_URL in .env and run:
 uv run university-news-db init
+uv run university-news-site init-search
 ```
 
 ### Backups
 
 The live cluster is in `data/postgres/`; never copy that directory while the
-server runs. Consistent copies come from two places: the hourly
-`export-enrichments` writes the annotations to `data/enriched/combined/`, and
-`scripts/backup_database.sh` writes a full dump to `data/backups/` daily at 03:30 (`university-news-backup.timer`, installed by
+server runs. `scripts/backup_database.sh` writes a full dump to
+`data/backups/` daily at 03:30 (`university-news-backup.timer`, installed by
 `install_user_services.sh`), keeping the 14 newest. To restore a dump:
 
 ```bash
@@ -75,12 +82,22 @@ command applies the pending ones under an advisory lock, each in its own
 transaction, and records them in `schema_migrations`. Never edit an applied
 migration; append a new one and a test.
 
+![PostgreSQL relational diagram](database-relational.svg)
+
+The diagram shows selected fields and all declared foreign keys as of migration
+6. Relationships marked `0..1` are optional; `N` means zero or more. The
+standalone migration table has no foreign keys. `site_documents` is a
+transactionally maintained projection; `embedding_state` tracks index state,
+while the vectors themselves live in LanceDB, outside PostgreSQL. The editable
+diagram source is [database-relational.dot](database-relational.dot).
+
 | Table | Contents |
 | --- | --- |
 | `sources` | registered universities and discovery state |
 | `discovered_urls` | every URL ever seen, keyed by the canonical-URL article ID |
-| `raw_documents` | where each fetched HTML file is stored, with its checksum |
+| `raw_documents` | HTML bytes (`BYTEA`), checksum, encoding, content type, final URL, HTTP status and fetch time |
 | `articles` | extracted, accepted, or rejected articles (`payload` holds the record) |
+| `site_documents` | transactional read projection of accepted articles and their latest annotations; BM25 indexed |
 | `processing_jobs` | the work queue: one job per article and stage |
 | `enrichment_profiles` | every enrichment configuration ever used (see below) |
 | `enrichments` | one annotation per article **and profile**, with metrics and run |
@@ -120,9 +137,16 @@ queued ───────────────► running ─────�
                         failed ──── retry (manual) ───► queued
 ```
 
-- **Claiming** uses `FOR UPDATE SKIP LOCKED`, so parallel workers never take
-  the same job. A claim sets a lease (`[workers].lease_seconds`), renewed by a
-  heartbeat while the job runs.
+- **Claiming** uses `FOR UPDATE SKIP LOCKED`. Each claim receives a unique
+  lease token, even if a worker name or attempt number is reused. A separate
+  connection renews the lease (`[workers].lease_seconds`) with a heartbeat.
+- **Lease ownership:** PostgreSQL writes and LanceDB writes lock and check the
+  active job before changing results. Renewal, failure and completion require
+  the same unexpired token; an obsolete attempt cannot enqueue the next stage.
+  A claimant skips a job locked for an in-progress write, even if its lease
+  expires during that write. LanceDB is outside the PostgreSQL transaction: if
+  the PostgreSQL connection dies during a LanceDB write, the lock can be lost
+  while that write is still in flight; retry and reconciliation remain necessary.
 - **Crash or kill -9:** the lease expires and another worker reclaims the job.
 - **Stop (SIGTERM, Ctrl-C, `systemctl stop`):** workers finish the job in hand,
   then exit. The run is recorded as `interrupted`.
@@ -134,10 +158,14 @@ queued ───────────────► running ─────�
 - **Permanent errors** (for example, output still invalid after its correction
   attempts) fail the job immediately. Failed jobs never retry on their own:
   inspect them with `errors`, then requeue them with `retry`.
-- **Idempotence:** before calling the model, the enrich stage checks whether
-  the article already has an annotation for the active profile. A job requeued
-  after a crash never pays twice, and the primary key `(article_id,
-  profile_id)` enforces this in the database.
+- **Idempotence:** the enrich stage skips an already stored annotation for its
+  profile; the primary key `(article_id, profile_id)` prevents duplicate saved
+  annotations. It cannot prevent a repeated paid request when a response was
+  received but the worker failed or lost its lease before saving it.
+
+Migration 6 adds lease tokens. Stop old workers before deploying this version,
+apply migrations, and then start the updated workers; old and new worker
+versions must not process the same queue concurrently.
 
 ## Transparency: what is recorded
 

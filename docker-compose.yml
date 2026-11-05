@@ -5,7 +5,11 @@
 #   DATABASE_URL=postgresql://university_news:<password>@127.0.0.1:5432/university_news
 services:
   postgres:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: deploy/postgres/Dockerfile
+    image: university-news-postgres:16-pg-search-0.26.4
+    command: ["postgres", "-c", "shared_preload_libraries=pg_search"]
     restart: unless-stopped
     environment:
       POSTGRES_USER: university_news

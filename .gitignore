@@ -26,6 +26,10 @@ deploy/systemd/generated/
 # Scraping outputs and local datasets
 data/
 raw/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
 
 # Local tooling
 .cache/

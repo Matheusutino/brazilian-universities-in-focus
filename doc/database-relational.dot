@@ -1,0 +1,62 @@
+// Render with: dot -Tsvg doc/database-relational.dot -o doc/database-relational.svg
+// Based on migrations 1–6; fields shown are selected for readability.
+digraph database {
+    graph [rankdir=LR, bgcolor="white", pad="0.35", nodesep="0.6", ranksep="1.3", splines=polyline,
+           label="PostgreSQL — modelo relacional (migrações 1–6)\nCampos selecionados • PK: chave primária • FK: chave estrangeira • UQ: único\nAs setas vão da tabela referenciada para a tabela que contém a FK.",
+           labelloc=t, fontsize=19, fontname="DejaVu Sans", fontcolor="#20344a"];
+    node [shape=plain, fontname="DejaVu Sans", fontsize=11];
+    edge [color="#6c8397", fontcolor="#38556c", fontsize=9, fontname="DejaVu Sans", arrowsize=0.7];
+
+    sources [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#176a76"><FONT COLOR="white"><B>sources</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  site : text<BR ALIGN="LEFT"/>base_url : text<BR ALIGN="LEFT"/>enabled : boolean<BR ALIGN="LEFT"/>last_successful_discovery_at : timestamptz</TD></TR></TABLE> >];
+    pipeline_runs [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#6c5794"><FONT COLOR="white"><B>pipeline_runs</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  id : uuid<BR ALIGN="LEFT"/>kind, status : text<BR ALIGN="LEFT"/>started_at, finished_at : timestamptz<BR ALIGN="LEFT"/>stats, config : jsonb<BR ALIGN="LEFT"/>worker_id, error : text</TD></TR></TABLE> >];
+    discovered_urls [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#176a76"><FONT COLOR="white"><B>discovered_urls</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  id : uuid<BR ALIGN="LEFT"/>FK  site : text<BR ALIGN="LEFT"/>FK  discovery_run_id : uuid (opcional)<BR ALIGN="LEFT"/>UQ  canonical_url : text<BR ALIGN="LEFT"/>url : text<BR ALIGN="LEFT"/>first_seen_at : timestamptz</TD></TR></TABLE> >];
+    raw_documents [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#176a76"><FONT COLOR="white"><B>raw_documents</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK, FK  article_id : uuid<BR ALIGN="LEFT"/>content : bytea<BR ALIGN="LEFT"/>sha256 : text<BR ALIGN="LEFT"/>encoding, content_type, final_url : text<BR ALIGN="LEFT"/>status_code : integer<BR ALIGN="LEFT"/>fetched_at : timestamptz<BR ALIGN="LEFT"/>path : text (legado)</TD></TR></TABLE> >];
+    articles [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#176a76"><FONT COLOR="white"><B>articles</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK, FK  id : uuid<BR ALIGN="LEFT"/>FK  site : text<BR ALIGN="LEFT"/>UQ  url : text<BR ALIGN="LEFT"/>status : text<BR ALIGN="LEFT"/>payload : jsonb<BR ALIGN="LEFT"/>content_hash, rejection_reason : text</TD></TR></TABLE> >];
+    processing_jobs [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#6c5794"><FONT COLOR="white"><B>processing_jobs</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  id : bigserial<BR ALIGN="LEFT"/>FK  article_id : uuid<BR ALIGN="LEFT"/>FK  site : text<BR ALIGN="LEFT"/>stage, status : text<BR ALIGN="LEFT"/>attempts, priority : integer<BR ALIGN="LEFT"/>lease_token : uuid<BR ALIGN="LEFT"/>lease_expires_at : timestamptz<BR ALIGN="LEFT"/>UQ  (article_id, stage)</TD></TR></TABLE> >];
+    enrichment_profiles [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#b17132"><FONT COLOR="white"><B>enrichment_profiles</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  id : text<BR ALIGN="LEFT"/>provider, model : text<BR ALIGN="LEFT"/>schema_version, prompt_sha256 : text<BR ALIGN="LEFT"/>settings, prompts, contract : jsonb</TD></TR></TABLE> >];
+    enrichments [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#b17132"><FONT COLOR="white"><B>enrichments</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK, FK  article_id : uuid<BR ALIGN="LEFT"/>PK, FK  profile_id : text<BR ALIGN="LEFT"/>FK  run_id : uuid (opcional)<BR ALIGN="LEFT"/>payload, metrics : jsonb<BR ALIGN="LEFT"/>content_hash : text<BR ALIGN="LEFT"/>created_at : timestamptz</TD></TR></TABLE> >];
+    embedding_state [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#366994"><FONT COLOR="white"><B>embedding_state</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK, FK  article_id : uuid<BR ALIGN="LEFT"/>content_hash, model : text<BR ALIGN="LEFT"/>indexed_at : timestamptz</TD></TR></TABLE> >];
+    site_documents [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#366994"><FONT COLOR="white"><B>site_documents</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK, FK  id : uuid<BR ALIGN="LEFT"/>site, url, title, subtitle, author : text<BR ALIGN="LEFT"/>date : date<BR ALIGN="LEFT"/>annotation : jsonb<BR ALIGN="LEFT"/>category, content_type : text<BR ALIGN="LEFT"/>fields : text[]<BR ALIGN="LEFT"/>summary, keywords : text</TD></TR></TABLE> >];
+    pipeline_errors [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#6c5794"><FONT COLOR="white"><B>pipeline_errors</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  id : bigserial<BR ALIGN="LEFT"/>FK  run_id : uuid (opcional)<BR ALIGN="LEFT"/>FK  job_id : bigint (opcional)<BR ALIGN="LEFT"/>FK  article_id : uuid (opcional)<BR ALIGN="LEFT"/>site, stage, error_type, message : text<BR ALIGN="LEFT"/>details : jsonb<BR ALIGN="LEFT"/>occurred_at : timestamptz</TD></TR></TABLE> >];
+    schema_migrations [label=< <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#bdd1dc">
+      <TR><TD BGCOLOR="#687782"><FONT COLOR="white"><B>schema_migrations</B></FONT></TD></TR>
+      <TR><TD ALIGN="LEFT">PK  version : integer<BR ALIGN="LEFT"/>description : text<BR ALIGN="LEFT"/>applied_at : timestamptz</TD></TR></TABLE> >];
+
+    sources -> discovered_urls [label="1 : N"];
+    pipeline_runs -> discovered_urls [label="0..1 : N"];
+    discovered_urls -> raw_documents [label="1 : 0..1"];
+    discovered_urls -> articles [label="1 : 0..1"];
+    sources -> articles [label="1 : N"];
+    discovered_urls -> processing_jobs [label="1 : N"];
+    sources -> processing_jobs [label="1 : N"];
+    articles -> enrichments [label="1 : N"];
+    enrichment_profiles -> enrichments [label="1 : N"];
+    pipeline_runs -> enrichments [label="0..1 : N"];
+    articles -> embedding_state [label="1 : 0..1"];
+    articles -> site_documents [label="1 : 0..1"];
+    pipeline_runs -> pipeline_errors [label="0..1 : N"];
+    processing_jobs -> pipeline_errors [label="0..1 : N"];
+    discovered_urls -> pipeline_errors [label="0..1 : N"];
+}

@@ -4,6 +4,8 @@ Each migration runs once, in order, inside a transaction. Never edit an applied
 migration; append a new one instead.
 """
 
+from .site_schema import SITE_DOCUMENTS_SQL
+
 BASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sources (
     site text PRIMARY KEY,
@@ -163,8 +165,26 @@ ALTER TABLE enrichment_profiles
     ADD COLUMN contract jsonb;
 """
 
+RAW_DOCUMENT_CONTENT_SQL = """
+ALTER TABLE raw_documents
+    ALTER COLUMN path DROP NOT NULL,
+    ADD COLUMN content bytea,
+    ADD COLUMN encoding text,
+    ADD COLUMN content_type text,
+    ADD COLUMN final_url text,
+    ADD CONSTRAINT raw_documents_content_not_empty
+        CHECK (content IS NULL OR octet_length(content) > 0);
+"""
+
+JOB_LEASE_TOKEN_SQL = """
+ALTER TABLE processing_jobs ADD COLUMN lease_token uuid;
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "base schema", BASE_SCHEMA_SQL),
     (2, "enrichment profiles and run transparency", ENRICHMENT_PROFILES_SQL),
     (3, "profile prompts and contract", PROFILE_PROMPTS_SQL),
+    (4, "transactional website documents", SITE_DOCUMENTS_SQL),
+    (5, "raw HTML content in PostgreSQL", RAW_DOCUMENT_CONTENT_SQL),
+    (6, "unique job lease tokens", JOB_LEASE_TOKEN_SQL),
 )

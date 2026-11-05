@@ -78,10 +78,13 @@ threads = 8
 batch_size = 8
 
 [site]
-# Built pages and data bundle (university-news-site build).
+# Static pages built from PostgreSQL (university-news-site build).
 directory = "data/site"
 address = "127.0.0.1"
 port = 8501
+database_pool_size = 4
+statement_timeout_ms = 10000
+semantic_health_interval_seconds = 60
 # Query embedding for semantic search: CPU by default, for small servers.
 query_gpu_layers = 0
 query_threads = 2

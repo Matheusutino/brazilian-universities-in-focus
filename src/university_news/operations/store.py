@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,12 @@ class Job:
     stage: str
     attempts: int
     priority: int
+    worker_id: str = ""
+    lease_token: uuid.UUID | None = None
+
+
+class LeaseLostError(RuntimeError):
+    """A worker no longer owns the claimed attempt."""
 
 
 class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
@@ -216,28 +223,52 @@ class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
                 )
                 UPDATE processing_jobs AS job
                 SET status = 'running', attempts = attempts + 1,
-                    worker_id = %s, started_at = COALESCE(started_at, now()),
+                    worker_id = %s, lease_token = %s, started_at = COALESCE(started_at, now()),
                     lease_expires_at = now() + make_interval(secs => %s)
                 FROM candidate WHERE job.id = candidate.id
                 RETURNING job.id, job.article_id, job.site, job.stage,
-                          job.attempts, job.priority,
+                          job.attempts, job.priority, job.worker_id, job.lease_token,
                           (SELECT url FROM discovered_urls WHERE id = job.article_id) AS url
                 """,
-                (list(stages), worker_id, lease_seconds),
+                (list(stages), worker_id, uuid.uuid4(), lease_seconds),
             )
             row = cursor.fetchone()
         return Job(**row) if row else None
 
-    def complete_job(self, job: Job, next_stages: Sequence[str] = ()) -> None:
+    @contextmanager
+    def lease_guard(self, job: Job):
+        """Fence side effects while holding the job row against a new claimant."""
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            # Lock first, then check time in a separate statement: the lease can
+            # expire while this transaction waits for someone else's row lock.
+            cursor.execute("SELECT id FROM processing_jobs WHERE id = %s FOR UPDATE", (job.id,))
+            cursor.execute(
+                """
+                SELECT id FROM processing_jobs
+                WHERE id = %s AND status = 'running' AND worker_id = %s
+                  AND lease_token = %s AND lease_expires_at > clock_timestamp()
+                """,
+                (job.id, job.worker_id, job.lease_token),
+            )
+            if cursor.fetchone() is None:
+                raise LeaseLostError(f"Job {job.id} lease ownership was lost")
+            yield
+
+    def complete_job(self, job: Job, next_stages: Sequence[str] = ()) -> bool:
         self._validate_stages(next_stages)
         with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM processing_jobs WHERE id = %s FOR UPDATE", (job.id,))
             cursor.execute(
                 """
                 UPDATE processing_jobs SET status = 'completed', finished_at = now(),
-                    lease_expires_at = NULL, last_error = NULL WHERE id = %s
+                    lease_expires_at = NULL, lease_token = NULL, last_error = NULL
+                WHERE id = %s AND status = 'running' AND worker_id = %s
+                  AND lease_token = %s AND lease_expires_at > clock_timestamp()
                 """,
-                (job.id,),
+                (job.id, job.worker_id, job.lease_token),
             )
+            if cursor.rowcount != 1:
+                return False
             for stage in next_stages:
                 cursor.execute(
                     """
@@ -247,16 +278,19 @@ class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
                     """,
                     (job.article_id, job.site, stage, job.priority),
                 )
+        return True
 
-    def renew_lease(self, job_id: int, worker_id: str, lease_seconds: int) -> bool:
+    def renew_lease(self, job: Job, lease_seconds: int) -> bool:
         with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM processing_jobs WHERE id = %s FOR UPDATE", (job.id,))
             cursor.execute(
                 """
                 UPDATE processing_jobs
-                SET lease_expires_at = now() + make_interval(secs => %s)
-                WHERE id = %s AND worker_id = %s AND status = 'running'
+                SET lease_expires_at = clock_timestamp() + make_interval(secs => %s)
+                WHERE id = %s AND worker_id = %s AND lease_token = %s
+                  AND status = 'running' AND lease_expires_at > clock_timestamp()
                 """,
-                (lease_seconds, job_id, worker_id),
+                (lease_seconds, job.id, job.worker_id, job.lease_token),
             )
             return cursor.rowcount == 1
 
@@ -269,21 +303,27 @@ class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
         max_attempts: int,
         run_id: uuid.UUID | None = None,
         details: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         retry = transient and job.attempts < max_attempts
         delay_seconds = min(60 * (5 ** max(job.attempts - 1, 0)), 43_200)
         with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM processing_jobs WHERE id = %s FOR UPDATE", (job.id,))
             cursor.execute(
                 """
                 UPDATE processing_jobs SET status = %s,
                     available_at = CASE WHEN %s THEN now() + make_interval(secs => %s)
                                         ELSE available_at END,
-                    lease_expires_at = NULL, worker_id = NULL,
+                    lease_expires_at = NULL, lease_token = NULL, worker_id = NULL,
                     finished_at = CASE WHEN %s THEN NULL ELSE now() END,
-                    last_error = %s WHERE id = %s
+                    last_error = %s WHERE id = %s AND status = 'running'
+                      AND worker_id = %s AND lease_token = %s
+                      AND lease_expires_at > clock_timestamp()
                 """,
-                ("queued" if retry else "failed", retry, delay_seconds, retry, str(error), job.id),
+                ("queued" if retry else "failed", retry, delay_seconds, retry, str(error),
+                 job.id, job.worker_id, job.lease_token),
             )
+            if cursor.rowcount != 1:
+                return False
             cursor.execute(
                 """
                 INSERT INTO pipeline_errors
@@ -295,6 +335,7 @@ class PostgresStore(ArticleStoreMixin, EnrichmentStoreMixin):
                  transient, type(error).__name__, str(error),
                  json.dumps(details or {}, ensure_ascii=False, default=str)),
             )
+        return True
 
     def record_error(
         self,

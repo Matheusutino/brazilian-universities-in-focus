@@ -7,7 +7,6 @@ import json
 import os
 import re
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -15,6 +14,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from ..settings import config_section
+from ..operations.identity import stable_article_id
 from .rate_limit import PacedPool
 from .schema import SHARED_SECTION, ClippingSchema
 
@@ -183,7 +183,6 @@ class EnrichmentSettings:
         provider_config = configured.get(provider)
         if not isinstance(provider_config, Mapping):
             raise TypeError(f"Missing [enrichment.{provider}] configuration")
-        prefix = "OPENWEBUI" if provider == "openwebui" else "NVIDIA_NIM"
         default_url = "" if provider == "openwebui" else DEFAULT_NVIDIA_NIM_URL
         default_model = DEFAULT_MODEL if provider == "openwebui" else ""
         default_input_chars = (
@@ -270,7 +269,7 @@ def article_id(article: dict[str, Any]) -> str:
     url = article.get("url")
     if not isinstance(url, str) or not url.strip():
         raise ValueError("Article has no URL")
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, url.strip()))
+    return str(stable_article_id(url))
 
 
 def article_content_hash(article: dict[str, Any]) -> str:

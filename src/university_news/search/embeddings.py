@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import hashlib
+from functools import cached_property
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +82,17 @@ class QwenGGUFEmbedder:
                 filename=model_file,
                 **options,
             )
+        # Record the resolved file even when loaded through the Hugging Face cache.
+        resolved = getattr(self.model, "model_path", None)
+        if resolved:
+            self.model_path = str(Path(resolved).resolve())
+
+    @cached_property
+    def model_sha256(self) -> str | None:
+        if self.model_path is None:
+            return None
+        with Path(self.model_path).open("rb") as source:
+            return hashlib.file_digest(source, "sha256").hexdigest()
 
     @property
     def dimension(self) -> int:

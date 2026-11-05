@@ -1,9 +1,7 @@
 import argparse
 import hashlib
 import json
-import os
 import re
-import tempfile
 from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -12,18 +10,15 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-import duckdb
 from lingua import Language, LanguageDetectorBuilder
 from tqdm import tqdm
 
 from ..paths import (
     compiled_articles_path,
-    compiled_site_articles_path,
     compiled_manifest_path,
     reports_directory,
     sites_directory,
 )
-from ..shared.articles import SITE_ARTICLE_COLUMNS
 from ..shared.io import (
     atomic_write_json,
     atomic_write_json_array,
@@ -82,7 +77,6 @@ class CompileStats:
     articles: int
     duplicate_urls_removed: int
     output: str
-    site_output: str
     manifest: str
 
 
@@ -489,7 +483,6 @@ def write_compiled_manifest(
     data_root: Path,
     *,
     output_path: Path,
-    site_output_path: Path,
     articles: int,
     duplicate_urls_by_site: dict[str, int] | None = None,
 ) -> Path:
@@ -522,7 +515,7 @@ def write_compiled_manifest(
     atomic_write_json(
         path,
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "dataset": {
                 "path": _relative_path(output_path, data_root),
@@ -535,14 +528,6 @@ def write_compiled_manifest(
                     sites_directory(data_root) / "*" / PREPROCESSED_ARTICLES_FILENAME,
                     data_root,
                 ),
-            },
-            "site_dataset": {
-                "path": _relative_path(site_output_path, data_root),
-                "format": "parquet",
-                "columns": list(SITE_ARTICLE_COLUMNS),
-                "articles": articles,
-                "bytes": site_output_path.stat().st_size,
-                "sha256": _file_sha256(site_output_path),
             },
             "preprocessing": {
                 "language": "Portuguese",
@@ -625,43 +610,6 @@ def write_compiled_manifest(
     return path
 
 
-def write_site_parquet(source_path: Path, output_path: Path) -> None:
-    """Atomically create the website's compact projection of the corpus."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output_path.name}.",
-        dir=output_path.parent,
-    )
-    os.close(descriptor)
-    temporary_path = Path(temporary_name)
-    temporary_path.unlink()
-    projections = ",\n".join(
-        f"json_extract_string(json, '$.{column}') AS {column}"
-        for column in SITE_ARTICLE_COLUMNS
-    )
-    quoted_output = str(temporary_path).replace("'", "''")
-    try:
-        with duckdb.connect() as connection:
-            connection.execute(
-                f"""
-                COPY (
-                    SELECT {projections}
-                    FROM read_json_objects(?, format = 'array')
-                )
-                TO '{quoted_output}'
-                (FORMAT PARQUET, COMPRESSION ZSTD)
-                """,
-                [str(source_path.resolve())],
-            )
-        os.replace(temporary_path, output_path)
-    except BaseException:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-
-
 def compile_articles(
     data_root: Path,
     *,
@@ -688,16 +636,9 @@ def compile_articles(
                 yield record | {"journal": journal}
 
     articles = atomic_write_json_array(output_path, compiled_records())
-    site_output_path = (
-        compiled_site_articles_path(data_root)
-        if output_path == compiled_articles_path(data_root)
-        else output_path.parent / "site_articles.parquet"
-    )
-    write_site_parquet(output_path, site_output_path)
     manifest_path = write_compiled_manifest(
         data_root,
         output_path=output_path,
-        site_output_path=site_output_path,
         articles=articles,
         duplicate_urls_by_site=dict(duplicate_urls_by_site),
     )
@@ -707,7 +648,6 @@ def compile_articles(
         articles=articles,
         duplicate_urls_removed=sum(duplicate_urls_by_site.values()),
         output=str(output_path),
-        site_output=str(site_output_path),
         manifest=str(manifest_path),
     )
 

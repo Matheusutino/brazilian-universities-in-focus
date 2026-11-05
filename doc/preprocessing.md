@@ -33,13 +33,11 @@ uv run university-news-compile --data-root data
 | Artifact | Contents |
 | --- | --- |
 | `articles.json` | full accepted corpus |
-| `site_articles.parquet` | compact projection (URL, title, subtitle, author, date, university) the website is built from |
 | `manifest.json` | counts per university, pipeline errors by stage and type, rejection categories, field completeness, date coverage, artifact paths, preprocessing parameters, file size, and SHA-256 checksum |
 
-After updating from the former `dashboard_articles.parquet` export, run
-`uv run university-news-compile --data-root data` before building the website.
-The compiled manifest uses schema version 2 and names this projection
-`site_dataset`; compilation results report its path as `site_output`.
+Compilation produces research artifacts, not website inputs. Manifest schema
+version 3 removes the former article Parquet projection. The website reads
+PostgreSQL directly; see [site.md](site.md) for migration and deployment.
 
 Compilation keeps the first occurrence of each URL. Later duplicates are
 dropped before they can reach the vector index.

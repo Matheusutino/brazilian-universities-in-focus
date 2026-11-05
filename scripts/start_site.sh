@@ -28,7 +28,7 @@ fi
 
 mkdir -p "$log_directory"
 cd "$project_root"
-# Pages and the data bundle are rebuilt here and hourly by the publish service.
+# Static pages are rebuilt from PostgreSQL here and by the publish service.
 "$uv_binary" run university-news-site build
 printf 'Site requested at %s\n' "$(date --iso-8601=seconds)" >"$log_path"
 nohup "$uv_binary" run university-news-site serve \

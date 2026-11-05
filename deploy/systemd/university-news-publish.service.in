@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish university-news data and rebuild the public website
+Description=Rebuild public static pages from PostgreSQL
 After=postgresql.service university-news-postgres.service
 
 [Service]
@@ -7,8 +7,4 @@ Type=oneshot
 TimeoutStartSec=30min
 WorkingDirectory=__PROJECT_ROOT__
 EnvironmentFile=__PROJECT_ROOT__/.env
-ExecStart=__UV__ run university-news-db export
-# Refresh the published annotations; "-" tolerates an empty table.
-ExecStart=-__UV__ run university-news-db export-enrichments
-# Rebuild the public pages and search bundle from the fresh exports.
 ExecStart=__UV__ run university-news-site build

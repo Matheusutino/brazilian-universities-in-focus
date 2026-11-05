@@ -461,6 +461,22 @@ UFT = SiteConfig(
     tags_selector=".tags-container a.tags-metadados",
 )
 
+UFAM = SiteConfig(
+    name="ufam",
+    base_url="https://www.ufam.edu.br/",
+    listing_url="https://www.ufam.edu.br/noticias.html",
+    paginated_url="https://www.ufam.edu.br/noticias.html?start={page}",
+    listing_selector='form#adminForm .tileItem h2.tileHeadline a[href*="/noticias/"]',
+    start_page=0,
+    end_page=2150,
+    page_step=10,
+    content_selector=".item-page",
+    title_selector=".item-page h1.documentFirstHeading",
+    author_selector=".item-page .documentAuthor strong",
+    date_selector=".item-page .documentPublished",
+    tags_selector=".item-page .tags a",
+)
+
 SITES: dict[str, SiteConfig] = {
     site.name: site
     for site in (
@@ -483,11 +499,13 @@ SITES: dict[str, SiteConfig] = {
         FURG,
         UFC,
         UFT,
+        UFAM,
     )
 }
 
 # Geographic region of each monitored university's main campus.
 SITE_REGIONS = {
+    "ufam": "Norte",
     "ufpa": "Norte",
     "ufal": "Nordeste",
     "unb": "Centro-Oeste",

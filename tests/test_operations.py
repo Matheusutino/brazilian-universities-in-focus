@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 from university_news.enrichment.workload import enrichment_workload
@@ -13,6 +14,54 @@ from university_news.operations.store import (
 )
 from university_news.operations.worker import LeaseHeartbeat, work
 from university_news.sources.catalog import SiteConfig
+
+
+def test_failed_embedding_backend_initialization_never_bypasses_validation(
+    tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+    import pytest
+    from university_news.operations import handlers as module
+
+    fake_store = SimpleNamespace(lease_guard=lambda job: nullcontext())
+    handler = module.StageHandlers(fake_store, tmp_path)
+    created = []
+    writes = []
+    def embedder(**kwargs):
+        created.append(True)
+        return SimpleNamespace(dimension=3)
+    monkeypatch.setattr(module, "QwenGGUFEmbedder", embedder)
+    monkeypatch.setattr(module, "connect_database", lambda path: object())
+    monkeypatch.setattr(module, "open_or_create_table", lambda *a, **kw: SimpleNamespace(count_rows=lambda: 1))
+    monkeypatch.setattr(module, "embedding_contract", lambda *a: {"model_sha256": "correct"})
+    monkeypatch.setattr(module, "load_index_metadata", lambda path: {"model_sha256": "wrong"})
+    monkeypatch.setattr(module, "write_metadata", lambda *a, **kw: writes.append(True))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="configuration changed"):
+            handler._load_embedding_backend(None)
+        assert handler._embedder is None
+        assert handler._lance_table is None
+    assert len(created) == 2
+    assert writes == []
+
+
+def test_embedding_backend_is_not_published_when_metadata_write_fails(tmp_path, monkeypatch):
+    import pytest
+    from university_news.operations import handlers as module
+
+    handler = module.StageHandlers(SimpleNamespace(lease_guard=lambda job: nullcontext()), tmp_path)
+    monkeypatch.setattr(module, "QwenGGUFEmbedder", lambda **kw: SimpleNamespace(dimension=3))
+    monkeypatch.setattr(module, "connect_database", lambda path: object())
+    monkeypatch.setattr(module, "open_or_create_table", lambda *a, **kw: SimpleNamespace(count_rows=lambda: 0))
+    monkeypatch.setattr(module, "embedding_contract", lambda *a: {})
+    monkeypatch.setattr(module, "load_index_metadata", lambda path: {})
+    def failed_write(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(module, "write_metadata", failed_write)
+    for _ in range(2):
+        with pytest.raises(OSError, match="disk full"):
+            handler._load_embedding_backend(None)
+        assert handler._embedder is None and handler._lance_table is None
 
 
 def test_migrations_are_numbered_consecutively() -> None:
@@ -29,11 +78,15 @@ def test_operational_schema_never_uses_pipeline_version_for_jobs() -> None:
 
 
 def test_article_identity_is_stable_by_canonical_url() -> None:
+    from university_news.enrichment.client import article_id as enrichment_id
+    from university_news.search.vector_index import article_id as vector_id
     with_fragment = "HTTPS://Example.edu/news/item#section"
     canonical = "https://example.edu/news/item"
 
     assert canonicalize_url(with_fragment) == canonical
     assert stable_article_id(with_fragment) == stable_article_id(canonical)
+    assert enrichment_id({"url": with_fragment}) == str(stable_article_id(canonical))
+    assert vector_id({"url": with_fragment}) == str(stable_article_id(canonical))
 
 
 def test_postgres_connection_uses_autocommit_for_session_locks(monkeypatch) -> None:
@@ -187,18 +240,20 @@ def test_enrichment_workload_accounts_for_calls_and_retries() -> None:
 
 def test_slow_jobs_renew_their_lease() -> None:
     renewed = threading.Event()
+    job = Job(id=7, article_id=stable_article_id("https://example.edu/news"),
+              site="usp", url="https://example.edu/news", stage="fetch",
+              attempts=1, priority=100, worker_id="worker")
 
     class Store:
         @staticmethod
-        def renew_lease(job_id, worker_id, lease_seconds):
-            assert (job_id, worker_id, lease_seconds) == (7, "worker", 60)
+        def renew_lease(claimed, lease_seconds):
+            assert (claimed, lease_seconds) == (job, 60)
             renewed.set()
             return True
 
     with LeaseHeartbeat(
         Store(),
-        job_id=7,
-        worker_id="worker",
+        job=job,
         lease_seconds=60,
         heartbeat_seconds=0.01,
     ):

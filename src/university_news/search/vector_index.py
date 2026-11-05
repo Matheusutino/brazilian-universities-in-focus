@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import uuid
+import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
@@ -14,12 +14,14 @@ from tqdm import tqdm
 
 from ..paths import DEFAULT_DATA_ROOT, compiled_articles_path, indexes_directory
 from ..settings import config_section
+from ..operations.identity import stable_article_id
 from ..sources.catalog import region_for_site
 from .embeddings import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_MODEL_FILE,
     DEFAULT_MODEL_REPO,
     QwenGGUFEmbedder,
+    QUERY_INSTRUCTION,
 )
 
 if TYPE_CHECKING:
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
 DEFAULT_DATABASE = indexes_directory(DEFAULT_DATA_ROOT) / "lancedb"
 DEFAULT_TABLE = "university_articles"
 INDEX_METADATA = "index_metadata.json"
+ANN_MIN_ROWS = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +79,7 @@ def article_id(article: dict[str, Any]) -> str:
     url = article.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("Article has no URL")
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, url))
+    return str(stable_article_id(url))
 
 
 def article_content(article: dict[str, Any]) -> str:
@@ -141,7 +144,10 @@ def connect_database(path: Path):
     except ImportError as exc:
         raise RuntimeError("lancedb is not installed; run `uv sync`") from exc
     path.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(str(path))
+    os.environ.setdefault("LANCE_INCLUDE_VECTOR_CENTROIDS", "false")
+    # See committed writes from other workers/processes instead of keeping the
+    # table version that happened to be current when the API started.
+    return lancedb.connect(str(path), read_consistency_interval=timedelta(seconds=0))
 
 
 def load_index_metadata(database_path: Path) -> dict[str, Any]:
@@ -238,12 +244,24 @@ def ensure_indexes(table: Any, *, rebuild: bool) -> None:
         ("date", BTree()),
     )
     for column, config in indexes:
+        if column == "vector" and table.count_rows() < ANN_MIN_ROWS:
+            continue  # Exact search is sufficient while a fresh corpus is tiny.
         if rebuild or column not in existing_columns:
             table.create_index(
                 column,
                 config=config,
                 replace=True,
             )
+
+
+def embedding_contract(embedder: QwenGGUFEmbedder, table: str) -> dict[str, Any]:
+    return {
+        "table": table, "model_repo": embedder.model_repo,
+        "model_file": embedder.model_file, "context_length": embedder.context_length,
+        "dimension": embedder.dimension, "distance": "cosine", "normalized": False,
+        "model_sha256": getattr(embedder, "model_sha256", None),
+        "query_instruction": QUERY_INSTRUCTION, "pooling": "last", "format_version": 1,
+    }
 
 
 def write_metadata(
@@ -257,16 +275,7 @@ def write_metadata(
     temporary = target.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(
-            {
-                "table": table,
-                "model_repo": embedder.model_repo,
-                "model_file": embedder.model_file,
-                "model_path": embedder.model_path,
-                "context_length": embedder.context_length,
-                "dimension": embedder.dimension,
-                "distance": "cosine",
-                "normalized": False,
-            },
+            {**embedding_contract(embedder, table), "model_path": embedder.model_path},
             ensure_ascii=False,
             indent=2,
         )
@@ -303,13 +312,7 @@ def index_articles(
         recreate=recreate,
     )
     metadata = load_index_metadata(database_path)
-    expected_model = {
-        "model_repo": embedder.model_repo,
-        "model_file": embedder.model_file,
-        "model_path": embedder.model_path,
-        "context_length": embedder.context_length,
-        "dimension": embedder.dimension,
-    }
+    expected_model = embedding_contract(embedder, table_name)
     if not recreate and table.count_rows():
         if not metadata:
             raise ValueError(

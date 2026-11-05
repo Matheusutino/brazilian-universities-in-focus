@@ -73,7 +73,8 @@ working around per-account limits is often not allowed.
 ## Running
 
 For the corpus, use the database-backed worker: it resumes after any stop,
-never pays twice for an article, and records every run and failure. The
+avoids repeat calls for annotations already saved and records runs and failures.
+A request may be repeated after a crash or lease loss before saving. The
 procedure is in the [runbook](database.md#runbook-enrich-the-whole-corpus).
 
 ```bash
@@ -112,7 +113,9 @@ either call flags it. Entities from the first call are passed to the second.
 Every response is validated with JSON Schema. Invalid output is sent back for
 correction; `validation_attempts` controls how many attempts are made.
 
-The database worker stores annotations in PostgreSQL; `export-enrichments`
+The database worker stores annotations in PostgreSQL; the website reads them
+directly, selecting the most recently stored profile per accepted article.
+For research, `export-enrichments`
 publishes them to `data/enriched/profiles/<profile>/` as JSONL, a flat Parquet
 table, and a checksummed manifest. The experimental JSONL command writes:
 

@@ -17,7 +17,7 @@ Current coverage, by region:
 
 | Region | Universities |
 | --- | --- |
-| Norte | UFPA, UFT |
+| Norte | UFAM, UFPA, UFT |
 | Nordeste | UFAL, UFC |
 | Centro-Oeste | UnB, UFMS |
 | Sudeste | USP, UNICAMP, UNESP, UFRJ, UERJ, UFABC, UFMG, UFLA, UNIFESP |
@@ -27,7 +27,15 @@ To add a university, define a `SiteConfig`, register it in the catalog, add
 its region, and cover any site-specific parsing in `pipeline/site_rules.py`
 with tests.
 
-## Running
+## Production collection
+
+Use `university-news-daily` and `university-news-worker` as described in
+[operations.md](operations.md). Workers download HTML into memory and persist
+the bytes, checksum, encoding, content type, final URL, status and fetch time in
+PostgreSQL `raw_documents`. Extraction reads this table directly; no local HTML
+or JSON intermediate is needed.
+
+## Optional offline/file collection
 
 ```bash
 # One university, every stage
@@ -46,7 +54,7 @@ uv run university-news-all --jobs 3
 `--concurrency` (1–10) limits simultaneous requests. Outputs go to
 `data/sites/<site>/` unless `--output` is given.
 
-## Stages
+## Offline stages
 
 **Discovery** walks the paginated listing pages and extracts article links
 with the site's CSS selector. URLs are written to `urls.jsonl`.
@@ -79,7 +87,7 @@ site found with:
 ```sql
 SELECT s->>'site', s->>'pages_checked', s->>'urls_new', s->>'errors'
 FROM pipeline_runs r, jsonb_array_elements(r.stats->'sites') s
-WHERE r.kind = 'daily-discovery' ORDER BY r.started_at DESC, 1 LIMIT 19;
+WHERE r.kind = 'daily-discovery' ORDER BY r.started_at DESC, 1 LIMIT 20;
 ```
 
 A site with `urls_seen = 0` and no errors usually means its listing HTML
@@ -97,6 +105,15 @@ another, download the "CA Issuers" URL from the server certificate and convert
 it with `openssl x509 -inform der -in issuer.crt -out config/certs/<name>.pem`.
 
 ## Known site limits
+
+- **UFAM** lists news at `https://www.ufam.edu.br/noticias.html`, with offsets
+  `?start=10`, `?start=20`, etc. The configured archive covers 216 pages
+  (offsets 0–2150); extend `end_page` as it grows. Metadata comes from
+  `.documentFirstHeading`, `.documentAuthor`, and `.documentPublished` inside
+  `.item-page`. This source covers the Notícias section, not every category
+  or subdomain maintained by UFAM. To collect it, run
+  `uv run university-news ufam --stage all`; daily discovery also includes it
+  by default.
 
 - **USP** blocks HTML pagination beyond page 15 ("Limite de paginação
   excedido"), so it is listed through the WordPress REST API instead

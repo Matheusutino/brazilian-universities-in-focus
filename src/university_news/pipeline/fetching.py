@@ -25,7 +25,7 @@ class ContentFetcher:
     def __init__(
         self,
         site: SiteConfig,
-        raw_directory: Path,
+        raw_directory: Path | None = None,
         *,
         concurrency: int = 10,
         timeout: float = 30.0,
@@ -48,24 +48,34 @@ class ContentFetcher:
         return f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.html"
 
     def path_for_url(self, url: str) -> Path:
+        if self.raw_directory is None:
+            raise ValueError("File downloads require an explicit raw_directory")
         return self.raw_directory / self.filename_for_url(url)
 
-    async def fetch(self, urls: list[str], *, force: bool = False) -> FetchResult:
-        self.raw_directory.mkdir(parents=True, exist_ok=True)
-        semaphore = asyncio.Semaphore(self.concurrency)
-        limits = httpx.Limits(
-            max_connections=self.concurrency,
-            max_keepalive_connections=self.concurrency,
-        )
-        headers = {"User-Agent": self.site.user_agent, "Accept": "text/html,*/*"}
-        async with httpx.AsyncClient(
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
             verify=tls_context(),
-            headers=headers,
+            headers={"User-Agent": self.site.user_agent, "Accept": "text/html,*/*"},
             follow_redirects=True,
             timeout=self.timeout,
-            limits=limits,
+            limits=httpx.Limits(
+                max_connections=self.concurrency,
+                max_keepalive_connections=self.concurrency,
+            ),
             transport=self.transport,
-        ) as client:
+        )
+
+    async def fetch_document(self, url: str) -> httpx.Response:
+        """Download into memory, preserving response bytes and decoding metadata."""
+        async with self._client() as client:
+            return await self._download(client, url)
+
+    async def fetch(self, urls: list[str], *, force: bool = False) -> FetchResult:
+        if self.raw_directory is None:
+            raise ValueError("File downloads require an explicit raw_directory")
+        self.raw_directory.mkdir(parents=True, exist_ok=True)
+        semaphore = asyncio.Semaphore(self.concurrency)
+        async with self._client() as client:
             tasks = [self._fetch_one(client, semaphore, url, force) for url in urls]
             results = await asyncio.gather(*tasks)
 

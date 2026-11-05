@@ -5,7 +5,7 @@ Configuration is split by sensitivity:
 | File | Contents | Committed |
 | --- | --- | --- |
 | `config/settings.toml` | providers, models, limits, paths, ports | yes |
-| `.env` | API keys and `DATABASE_URL` only | no |
+| `.env` | API keys and database credentials | no |
 | `config/schemas/university_clipping.json` | enrichment output contract | yes |
 
 Create the local secrets file from the template:
@@ -20,6 +20,7 @@ cp .env.example .env
 | `OPENWEBUI_API_KEY` or `OPENWEBUI_API_KEYS` | enrichment with OpenWebUI |
 | `OPENROUTER_API_KEY` | `--extractor llm` or `--extractor hybrid` |
 | `DATABASE_URL` | the PostgreSQL pipeline; written by `scripts/setup_local_postgres.sh` |
+| `SITE_DATABASE_URL` | optional read-only website connection; falls back to `DATABASE_URL` |
 | `TEST_DATABASE_URL` | optional integration tests; the database is wiped |
 
 When a new secret becomes required, add it to `.env.example`.
@@ -35,7 +36,7 @@ When a new secret becomes required, add it to `.env.example`.
 | `[openrouter]` | model used by LLM-based extraction |
 | `[search]` | `hybrid` or `lexical` mode and the LanceDB location |
 | `[embedding]` | GGUF model, context lengths, GPU layers, threads, batch size |
-| `[site]` | build directory, bind address and port, query model on CPU or GPU, threads, query cache size |
+| `[site]` | build directory, address/port, PostgreSQL pool size and statement timeout, query model, threads and cache |
 | `[runtime]` | log directory and log/PID file names used by the scripts |
 
 Read any value from the shell. The service scripts use this command too:

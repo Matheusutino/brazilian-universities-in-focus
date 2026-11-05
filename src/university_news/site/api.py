@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .build import PUBLIC_DIRECTORY
-from .bundle import DATABASE_FILENAME
 from .render import make_environment
-from .search import ArticleIndex, ArticleQuery, CachedEncoder, lancedb_semantic
+from .search import ArticleIndex, ArticleQuery, CachedEncoder
+from ..search.semantic import SemanticHealth, SemanticRuntime
 
 LOGGER = logging.getLogger(__name__)
 PAGE_SIZE = 12
@@ -33,60 +34,115 @@ def _parse_date(value: str | None) -> date | None:
         raise HTTPException(status_code=422, detail=f"Invalid date: {value}") from exc
 
 
-def load_semantic_search(settings: dict[str, Any], index: ArticleIndex) -> None:
-    """Load the query model and vector index in the background.
+def monitor_semantic_search(
+    settings: dict[str, Any], index: ArticleIndex, health: SemanticHealth,
+    stop: threading.Event,
+) -> None:
+    """Periodically run embedding + retrieval + PostgreSQL ID resolution."""
+    runtime = None
+    interval = float(settings.get("health_interval_seconds", 60))
+    while not stop.is_set():
+        try:
+            if runtime is None:
+                runtime = SemanticRuntime.load(settings)
+            report = runtime.probe(
+                resolve=lambda ids: index._matching_rows(ids, ArticleQuery())
+            )
+            if stop.is_set():
+                return
+            if report["ready"]:
+                if index.semantic is None:
+                    index.encoder = CachedEncoder(
+                        runtime.encoder, int(settings.get("query_cache_size", 2048))
+                    )
+                    index.semantic = runtime.search
+            else:
+                index.encoder = None
+                index.semantic = None
+            health.record(**report)
+        except Exception as exc:
+            if stop.is_set():
+                return
+            index.encoder = None
+            index.semantic = None
+            health.failure(exc)
+            runtime = None
+            LOGGER.exception("semantic probe failed; serving BM25 results")
+        stop.wait(interval)
 
-    Until they are ready (or if they fail), search runs lexical only, so the
-    site starts instantly and never depends on the model being available.
-    """
-    from ..search.embeddings import QwenGGUFEmbedder
-    from ..search.vector_index import connect_database
 
-    try:
-        table = connect_database(Path(settings["lancedb_path"])).open_table(settings["lancedb_table"])
-        model_path = settings.get("model_path")
-        encoder = QwenGGUFEmbedder(
-            model_path=Path(model_path) if model_path else None,
-            model_repo=settings["model_repo"],
-            model_file=settings["model_file"],
-            context_length=int(settings.get("query_context_length", 512)),
-            gpu_layers=int(settings.get("gpu_layers", 0)),
-            threads=int(settings.get("threads", 2)),
-        )
-        encoder.encode_query("aquecimento")  # Warm up before taking traffic.
-        index.encoder = CachedEncoder(encoder, int(settings.get("query_cache_size", 2048)))
-        index.semantic = lancedb_semantic(table)
-        LOGGER.info("semantic search ready")
-    except Exception:  # noqa: BLE001 - lexical search keeps working
-        LOGGER.exception("semantic search unavailable; serving lexical results")
-
-
-def create_app(site_directory: Path, *, semantic: dict[str, Any] | None = None) -> FastAPI:
-    database = site_directory / DATABASE_FILENAME
+def create_app(
+    site_directory: Path, *, index: ArticleIndex, semantic: dict[str, Any] | None = None
+) -> FastAPI:
     public = site_directory / PUBLIC_DIRECTORY
-    if not database.is_file() or not public.is_dir():
+    if not public.is_dir():
         raise RuntimeError(
             f"Site not built in {site_directory}; run `university-news-site build`"
         )
-    index = ArticleIndex(database)
     environment = make_environment()
-    app = FastAPI(title="Universidades em Foco", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    interval = float((semantic or {}).get("health_interval_seconds", 60))
+    if interval <= 0:
+        raise ValueError("health_interval_seconds must be positive")
+    semantic_health = SemanticHealth(enabled=bool(semantic), max_age=interval * 2 + 30)
+    index.semantic_health = semantic_health
+
+    @asynccontextmanager
+    async def lifespan(app):
+        stop = threading.Event()
+        monitor = None
+        try:
+            index.open()
+            index.health()
+            if semantic:
+                monitor = threading.Thread(
+                    target=monitor_semantic_search,
+                    args=(semantic, index, semantic_health, stop), daemon=True,
+                )
+                monitor.start()
+            yield
+        finally:
+            stop.set()
+            if monitor is not None:
+                monitor.join(timeout=5)
+            index.close()
+
+    app = FastAPI(title="Universidades em Foco", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.state.index = index
-    if semantic:
-        threading.Thread(target=load_semantic_search, args=(semantic, index), daemon=True).start()
 
     def page_context() -> dict[str, Any]:
         import json
 
-        stats_path = site_directory / "stats.json"
+        stats_path = public / "stats.json"
+        stats = json.loads(stats_path.read_text(encoding="utf-8"))
         return {
-            "stats": json.loads(stats_path.read_text(encoding="utf-8")),
-            "version": index.meta("version") or "0",
+            "stats": stats,
+            "version": stats.get("version", "0"),
         }
 
     @app.get("/healthz")
-    def health() -> dict[str, Any]:
-        return {"ok": True, "semantic": index.encoder is not None}
+    def health() -> JSONResponse:
+        try:
+            index.health()
+        except Exception:
+            LOGGER.exception("PostgreSQL search health check failed")
+            return JSONResponse({"ok": False, "database": False}, status_code=503)
+        status = semantic_health.snapshot()
+        ready = status["ready"]
+        return JSONResponse({
+            "ok": True, "database": True, "semantic": ready,
+            "degraded": status["enabled"] and (not ready or not status.get("efficient", True)),
+            "semantic_status": status,
+        })
+
+    @app.get("/readyz")
+    def readiness() -> JSONResponse:
+        response = health()
+        if response.status_code != 200:
+            return response
+        status = semantic_health.snapshot()
+        if status["enabled"] and (not status["ready"] or not status.get("efficient", False)):
+            return JSONResponse({"ready": False, "semantic_status": status}, status_code=503)
+        return JSONResponse({"ready": True, "semantic_status": status})
 
     @app.get("/api/articles")
     def articles(
@@ -123,6 +179,7 @@ def create_app(site_directory: Path, *, semantic: dict[str, Any] | None = None) 
         response = JSONResponse(
             {
                 "total": result.total,
+                "total_is_exact": result.total_is_exact,
                 "page": page,
                 "page_size": page_size,
                 "pages": math.ceil(result.total / page_size),
@@ -130,10 +187,11 @@ def create_app(site_directory: Path, *, semantic: dict[str, Any] | None = None) 
                 "elapsed_ms": result.elapsed_ms,
                 "notes": result.notes,
                 "timings": result.timings,
+                "retrieval": result.retrieval,
                 "results": result.results,
             }
         )
-        # Listings change only at publication; searches are cheap to repeat.
+        # Bound cache staleness while endpoints read live PostgreSQL data.
         response.headers["Cache-Control"] = "public, max-age=60" if query.text else "public, max-age=300"
         return response
 
